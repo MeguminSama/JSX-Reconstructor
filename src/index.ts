@@ -10,10 +10,13 @@ import {
 } from "fs";
 import path from "path";
 import {
+  Program,
   CallExpression,
   MemberExpression,
   SequenceExpression,
   UnaryExpression,
+  FunctionDeclaration,
+  BlockStatement,
   Node,
 } from "estree";
 import * as recast from "recast";
@@ -45,6 +48,12 @@ for (const file of files) {
 }
 
 function parseModule(node: acorn.Node) {
+  const program = node as unknown as Program;
+  const customJSXRuntime = program.body.find(
+    (statement) =>
+      statement.type === "FunctionDeclaration" && isCustomJSXRuntime(statement)
+  )! as FunctionDeclaration; // what
+
   walk.ancestor(node, {
     // @ts-ignore weird typing issues...
     MemberExpression(node: MemberExpression, ancestors: Node[]) {
@@ -64,7 +73,12 @@ function parseModule(node: acorn.Node) {
         let componentName = recast.print(component).code;
         componentName = componentName.replace(/^"/, "").replace(/"$/, "");
 
-        const selfClosing = children.length === 0;
+        const selfClosing =
+          children.filter((child) =>
+            child.type === "UnaryExpression"
+              ? (child as UnaryExpression).operator !== "void"
+              : child
+          ).length === 0;
 
         const attributes: any[] = parseComponentProps(originalProps);
 
@@ -104,58 +118,91 @@ function parseModule(node: acorn.Node) {
     },
 
     // @ts-ignore
-    CallExpression(node: CallExpression, ancestors: Node[]) {
-      if (
-        // node.object.name === "React" &&
-        node.callee.type === "Identifier" &&
-        (node.callee.name.endsWith("jsx") || node.callee.name.endsWith("jsxs"))
-      ) {
-        const parent = ancestors[ancestors.length - 2];
-        if (parent.type !== "ReturnStatement") return;
+    CallExpression(_node: CallExpression, ancestors: Node[]) {
+      const parent = ancestors[ancestors.length - 2];
+      // if (parent.type !== "ReturnStatement") return;
 
-        const [component, originalProps, ...children]: any[] =
-          node.arguments;
+      const recurse: (node: CallExpression) => any = (node: CallExpression) => {
+        if (
+          // node.object.name === "React" &&
+          node.callee.type === "Identifier" &&
+          (node.callee.name.endsWith("jsx") ||
+            node.callee.name.endsWith("jsxs") ||
+            (customJSXRuntime &&
+              node.callee.name === customJSXRuntime.id!.name))
+        ) {
+          const [component, originalProps, ...children]: any[] = node.arguments;
 
-        let componentName = recast.print(component).code;
-        componentName = componentName.replace(/^"/, "").replace(/"$/, "");
+          let componentName = recast.print(component).code;
+          componentName = componentName.replace(/^"/, "").replace(/"$/, "");
 
-        const selfClosing = children.length === 0;
+          const selfClosing =
+            children.filter((child) =>
+              child.type === "UnaryExpression"
+                ? (child as UnaryExpression).operator !== "void"
+                : child
+            ).length === 0;
 
-        const attributes: any[] = parseComponentProps(originalProps);
+          const attributes: any[] = parseComponentProps(originalProps);
 
-        const jsxElement = {
-          type: "JSXElement",
-          openingElement: {
-            type: "JSXOpeningElement",
-            name: {
-              type: "JSXIdentifier",
-              name: componentName,
-            },
-            attributes: attributes,
-            selfClosing: selfClosing,
-          },
-          closingElement: selfClosing
-            ? null
-            : {
-                type: "JSXClosingElement",
-                name: {
-                  type: "JSXIdentifier",
-                  name: componentName,
-                },
+          const jsxElement: any = {
+            type: "JSXElement",
+            openingElement: {
+              type: "JSXOpeningElement",
+              name: {
+                type: "JSXIdentifier",
+                name: componentName,
               },
-          children: children.map((c) => {
-            if (c.type === "Identifier" || c.type.endsWith("Expression")) {
-              return {
-                type: "JSXExpressionContainer",
-                expression: c,
-              };
-            }
-            return c;
-          }),
-        };
+              attributes: attributes,
+              selfClosing: selfClosing,
+            },
+            closingElement: selfClosing
+              ? null
+              : {
+                  type: "JSXClosingElement",
+                  name: {
+                    type: "JSXIdentifier",
+                    name: componentName,
+                  },
+                },
+            children: children
+              .map((c) => {
+                if (
+                  c.type === "Identifier" ||
+                  (c.type.endsWith("Expression") &&
+                    c.type !== "CallExpression" &&
+                    c.type !== "ConditionalExpression" &&
+                    c.operator !== "void")
+                ) {
+                  return {
+                    type: "JSXExpressionContainer",
+                    expression: c,
+                  };
+                } else if (c.type === "CallExpression") {
+                  return recurse(c);
+                } else if (c.type === "ConditionalExpression") {
+                  return Object.assign(c, {
+                    consequent:
+                      c.consequent.type === "CallExpression"
+                        ? recurse(c.consequent)
+                        : c,
+                    alternate:
+                      c.alternate.type === "CallExpression"
+                        ? recurse(c.alternate)
+                        : c,
+                  });
+                }
 
-        Object.assign(parent, { argument: jsxElement });
-      }
+                return c.operator !== "void" ? c : null; // i see void 0 in my nightmares
+              })
+              .filter((c) => c),
+          };
+
+          return jsxElement;
+        }
+      };
+
+      Object.assign(parent, { argument: recurse(_node) });
     },
 
     // @ts-ignore
@@ -221,11 +268,33 @@ function parseModule(node: acorn.Node) {
         };
 
         Object.assign(parent, jsxElement);
+      } else {
+        const parent = ancestors[ancestors.length - 2];
+        if (parent.type !== "CallExpression") return;
+
+        Object.assign(parent, { callee: proxiedMemberExpression });
       }
     },
   });
 
   return node;
+}
+
+function isCustomJSXRuntime(node: FunctionDeclaration) {
+  const blockStatement = node.body as BlockStatement;
+  return blockStatement.body.find(
+    (statement) =>
+      statement.type === "ExpressionStatement" &&
+      statement.expression.type === "LogicalExpression" &&
+      statement.expression.right.type === "AssignmentExpression" &&
+      statement.expression.right.right.type === "LogicalExpression" &&
+      statement.expression.right.right.left.type === "LogicalExpression" &&
+      statement.expression.right.right.left.right.type === "CallExpression" &&
+      statement.expression.right.right.left.right.arguments.find(
+        (expression: Node) =>
+          expression.type === "Literal" && expression.value === "react.element"
+      )
+  );
 }
 
 function isSpreadOperator(node: CallExpression) {
