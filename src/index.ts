@@ -172,7 +172,7 @@ function parseModule(node: acorn.Node) {
                   (c.type.endsWith("Expression") &&
                     c.type !== "CallExpression" &&
                     c.type !== "ConditionalExpression" &&
-                    /* c.type !== "LogicalExpression" && */
+                    c.type !== "LogicalExpression" &&
                     c.operator !== "void")
                 ) {
                   return {
@@ -195,21 +195,21 @@ function parseModule(node: acorn.Node) {
                           : c,
                     }),
                   };
-                } /* else if (c.type === "LogicalExpression") {
+                } else if (c.type === "LogicalExpression") {
                   return {
                     type: "JSXExpressionContainer",
                     expression: Object.assign(c, {
                       left:
                         c.left.type === "CallExpression"
                           ? recurse(c.left)
-                          : c,
+                          : c.left,
                       right:
                         c.right.type === "CallExpression"
                           ? recurse(c.right)
-                          : c,
+                          : c.right,
                     }),
                   };
-                } */
+                }
 
                 return c.operator !== "void" ? c : null; // i see void 0 in my nightmares
               })
