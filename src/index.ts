@@ -34,18 +34,21 @@ if (!existsSync(path.join(process.cwd(), "output"))) {
 }
 
 for (const file of files) {
-  // if (file !== "1445.js") continue; // DEBUG
-  console.log(file);
-  const filePath = path.join(process.cwd(), "input", file);
-  const data = readFileSync(filePath, "utf-8");
-  const ast = parser.parse(data, {
-    sourceType: "module",
-    ecmaVersion: "latest",
-  });
-  writeFileSync(
-    path.join(process.cwd(), "output", `${file}x`),
-    prettier.format(recast.print(parseModule(ast)).code, { parser: "babel" })
-  );
+  try {
+    console.log(file);
+    const filePath = path.join(process.cwd(), "input", file);
+    const data = readFileSync(filePath, "utf-8");
+    const ast = parser.parse(data, {
+      sourceType: "module",
+      ecmaVersion: "latest",
+    });
+    writeFileSync(
+      path.join(process.cwd(), "output", `${file}x`),
+      prettier.format(recast.print(parseModule(ast)).code, { parser: "babel" })
+    );
+  } catch (e) {
+    console.log(`error: ${e.toString()}`);
+  }
 }
 
 function parseModule(node: acorn.Node) {
@@ -214,6 +217,8 @@ function parseModule(node: acorn.Node) {
           };
 
           return jsxElement;
+        } else {
+          return node;
         }
       };
 
@@ -298,32 +303,24 @@ function parseModule(node: acorn.Node) {
 function isJSXRuntime(node: Node, fallback?: FunctionDeclaration) {
   return (
     (node.type === "SequenceExpression" &&
-      (
-        (
-          (node.expressions[1]! as MemberExpression).property as Identifier
-        ).name.endsWith("jsx") ||
+      ((
+        (node.expressions[1]! as MemberExpression).property as Identifier
+      ).name.endsWith("jsx") ||
         (
           (node.expressions[1]! as MemberExpression).property as Identifier
         ).name.endsWith("jsxs") ||
-        (fallback && (
-          (node.expressions[1]! as MemberExpression).property as Identifier
-        ).name === fallback.id!.name)
-      )
-    ) ||
+        (fallback &&
+          ((node.expressions[1]! as MemberExpression).property as Identifier)
+            .name === fallback.id!.name))) ||
     (node.type === "MemberExpression" &&
-      (
-        (node.property as Identifier).name.endsWith("jsx") ||
-        (node.property as Identifier).name.endsWith("jsxs") || 
-        (fallback && (node.property as Identifier).name === fallback.id!.name) 
-      )
-    ) ||
+      ((node.property as Identifier).name.endsWith("jsx") ||
+        (node.property as Identifier).name.endsWith("jsxs") ||
+        (fallback &&
+          (node.property as Identifier).name === fallback.id!.name))) ||
     (node.type === "Identifier" &&
-      (
-        node.name.endsWith("jsx") ||
-        node.name.endsWith("jsxs") || 
-        (fallback && node.name === fallback.id!.name) 
-      )
-    )
+      (node.name.endsWith("jsx") ||
+        node.name.endsWith("jsxs") ||
+        (fallback && node.name === fallback.id!.name)))
   );
 }
 
