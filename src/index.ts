@@ -17,8 +17,9 @@ import {
   UnaryExpression,
   FunctionDeclaration,
   BlockStatement,
-  Node,
+  Literal,
   Identifier,
+  Node,
 } from "estree";
 import * as recast from "recast";
 import * as prettier from "prettier";
@@ -300,6 +301,16 @@ function parseModule(node: acorn.Node) {
         Object.assign(parent, { callee: proxiedMemberExpression });
       }
     },
+
+    // @ts-ignore
+    UnaryExpression(node: UnaryExpression, ancestors: Node[]) {
+      if (isBooleanOperator(node)) {
+        Object.assign(node, {
+          type: "Literal",
+          value: Boolean(!(node.argument as Literal).value)
+        });
+      }
+    }
   });
 
   return node;
@@ -344,6 +355,10 @@ function isCustomJSXRuntime(node: FunctionDeclaration) {
           expression.type === "Literal" && expression.value === "react.element"
       )
   );
+}
+
+function isBooleanOperator(node: UnaryExpression) {
+  return node.type === "UnaryExpression" && node.operator === "!" && node.argument.type === "Literal" && typeof node.argument.value === "number"
 }
 
 function isSpreadOperator(node: CallExpression) {
