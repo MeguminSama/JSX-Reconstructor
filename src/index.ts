@@ -18,6 +18,7 @@ import {
   FunctionDeclaration,
   BlockStatement,
   Node,
+  Identifier,
 } from "estree";
 import * as recast from "recast";
 import * as prettier from "prettier";
@@ -125,11 +126,7 @@ function parseModule(node: acorn.Node) {
       const recurse: (node: CallExpression) => any = (node: CallExpression) => {
         if (
           // node.object.name === "React" &&
-          node.callee.type === "Identifier" &&
-          (node.callee.name.endsWith("jsx") ||
-            node.callee.name.endsWith("jsxs") ||
-            (customJSXRuntime &&
-              node.callee.name === customJSXRuntime.id!.name))
+          isJSXRuntime(node.callee, customJSXRuntime)
         ) {
           const [component, originalProps, ...children]: any[] = node.arguments;
 
@@ -296,6 +293,38 @@ function parseModule(node: acorn.Node) {
   });
 
   return node;
+}
+
+function isJSXRuntime(node: Node, fallback?: FunctionDeclaration) {
+  return (
+    (node.type === "SequenceExpression" &&
+      (
+        (
+          (node.expressions[1]! as MemberExpression).property as Identifier
+        ).name.endsWith("jsx") ||
+        (
+          (node.expressions[1]! as MemberExpression).property as Identifier
+        ).name.endsWith("jsxs") ||
+        (fallback && (
+          (node.expressions[1]! as MemberExpression).property as Identifier
+        ).name === fallback.id!.name)
+      )
+    ) ||
+    (node.type === "MemberExpression" &&
+      (
+        (node.property as Identifier).name.endsWith("jsx") ||
+        (node.property as Identifier).name.endsWith("jsxs") || 
+        (fallback && (node.property as Identifier).name === fallback.id!.name) 
+      )
+    ) ||
+    (node.type === "Identifier" &&
+      (
+        node.name.endsWith("jsx") ||
+        node.name.endsWith("jsxs") || 
+        (fallback && node.name === fallback.id!.name) 
+      )
+    )
+  );
 }
 
 function isCustomJSXRuntime(node: FunctionDeclaration) {
