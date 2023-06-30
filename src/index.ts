@@ -380,7 +380,7 @@ function parseModule(node: acorn.Node) {
 														callee: {
 															type: "Super",
 														},
-														arguments: [],
+														arguments: expression.params,
 														optional: false,
 													},
 												},
