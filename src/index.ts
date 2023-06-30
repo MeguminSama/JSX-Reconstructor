@@ -46,7 +46,7 @@ for (const file of files) {
       path.join(process.cwd(), "output", `${file}x`),
       prettier.format(recast.print(parseModule(ast)).code, { parser: "babel" })
     );
-  } catch (e) {
+  } catch (e: any) {
     console.log(`error: ${e.toString()}`);
   }
 }
@@ -180,7 +180,12 @@ function parseModule(node: acorn.Node) {
                     expression: c,
                   };
                 } else if (c.type === "CallExpression") {
-                  return recurse(c);
+                  return isJSXRuntime(c.callee, customJSXRuntime)
+                    ? recurse(c)
+                    : {
+                        type: "JSXExpressionContainer",
+                        expression: c,
+                      };
                 } else if (c.type === "ConditionalExpression") {
                   return {
                     type: "JSXExpressionContainer",
