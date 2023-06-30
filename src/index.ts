@@ -120,7 +120,7 @@ function parseModule(node: acorn.Node) {
     // @ts-ignore
     CallExpression(_node: CallExpression, ancestors: Node[]) {
       const parent = ancestors[ancestors.length - 2];
-      // if (parent.type !== "ReturnStatement") return;
+      if (parent.type !== "ReturnStatement") return;
 
       const recurse: (node: CallExpression) => any = (node: CallExpression) => {
         if (
@@ -172,6 +172,7 @@ function parseModule(node: acorn.Node) {
                   (c.type.endsWith("Expression") &&
                     c.type !== "CallExpression" &&
                     c.type !== "ConditionalExpression" &&
+                    /* c.type !== "LogicalExpression" && */
                     c.operator !== "void")
                 ) {
                   return {
@@ -181,17 +182,34 @@ function parseModule(node: acorn.Node) {
                 } else if (c.type === "CallExpression") {
                   return recurse(c);
                 } else if (c.type === "ConditionalExpression") {
-                  return Object.assign(c, {
-                    consequent:
-                      c.consequent.type === "CallExpression"
-                        ? recurse(c.consequent)
-                        : c,
-                    alternate:
-                      c.alternate.type === "CallExpression"
-                        ? recurse(c.alternate)
-                        : c,
-                  });
-                }
+                  return {
+                    type: "JSXExpressionContainer",
+                    expression: Object.assign(c, {
+                      consequent:
+                        c.consequent.type === "CallExpression"
+                          ? recurse(c.consequent)
+                          : c,
+                      alternate:
+                        c.alternate.type === "CallExpression"
+                          ? recurse(c.alternate)
+                          : c,
+                    }),
+                  };
+                } /* else if (c.type === "LogicalExpression") {
+                  return {
+                    type: "JSXExpressionContainer",
+                    expression: Object.assign(c, {
+                      left:
+                        c.left.type === "CallExpression"
+                          ? recurse(c.left)
+                          : c,
+                      right:
+                        c.right.type === "CallExpression"
+                          ? recurse(c.right)
+                          : c,
+                    }),
+                  };
+                } */
 
                 return c.operator !== "void" ? c : null; // i see void 0 in my nightmares
               })
