@@ -17,6 +17,7 @@ import {
   UnaryExpression,
   FunctionDeclaration,
   BlockStatement,
+  ExpressionStatement,
   Literal,
   Identifier,
   Node,
@@ -53,7 +54,8 @@ for (const file of files) {
 }
 
 function parseModule(node: acorn.Node) {
-  const program = node as unknown as Program;
+  var program = node as unknown as Program;
+
   const customJSXRuntime = program.body.find(
     (statement) =>
       statement.type === "FunctionDeclaration" && isCustomJSXRuntime(statement)
@@ -119,6 +121,37 @@ function parseModule(node: acorn.Node) {
         };
 
         Object.assign(parent, jsxElement);
+      }
+    },
+
+    // @ts-ignore
+    FunctionDeclaration(_node: FunctionDeclaration, ancestors: Node[]) {
+      var displayName = program.body[
+        program.body.findIndex(
+          (node) =>
+            _node &&
+            node.type === "ExpressionStatement" &&
+            node.expression.type === "AssignmentExpression" &&
+            node.expression.left.type === "MemberExpression" &&
+            node.expression.left.object.type === "Identifier" &&
+            node.expression.left.object.name === _node.id!.name &&
+            node.expression.left.property.type === "Identifier" &&
+            node.expression.left.property.name === "displayName"
+        )
+      ]! as ExpressionStatement;
+
+      if (
+        displayName &&
+        displayName.type === "ExpressionStatement" &&
+        displayName.expression.type === "AssignmentExpression" &&
+        displayName.expression.left.type === "MemberExpression" &&
+        displayName.expression.left.object.type === "Identifier" &&
+        displayName.expression.left.property.type === "Identifier" &&
+        displayName.expression.right.type === "Literal"
+      ) {
+        _node.id!.name = displayName.expression.right.value! as string;
+        displayName.expression.left.object.name = displayName.expression.right
+          .value! as string;
       }
     },
 
@@ -307,10 +340,10 @@ function parseModule(node: acorn.Node) {
       if (isBooleanOperator(node)) {
         Object.assign(node, {
           type: "Literal",
-          value: Boolean(!(node.argument as Literal).value)
+          value: Boolean(!(node.argument as Literal).value),
         });
       }
-    }
+    },
   });
 
   return node;
@@ -358,7 +391,12 @@ function isCustomJSXRuntime(node: FunctionDeclaration) {
 }
 
 function isBooleanOperator(node: UnaryExpression) {
-  return node.type === "UnaryExpression" && node.operator === "!" && node.argument.type === "Literal" && typeof node.argument.value === "number"
+  return (
+    node.type === "UnaryExpression" &&
+    node.operator === "!" &&
+    node.argument.type === "Literal" &&
+    typeof node.argument.value === "number"
+  );
 }
 
 function isSpreadOperator(node: CallExpression) {
