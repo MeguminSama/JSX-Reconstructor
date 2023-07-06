@@ -208,3 +208,11 @@ export function isCustomJSXRuntime(node: FunctionDeclaration): boolean {
 			)
 	);
 }
+
+export function pushWithoutDuplicates(array: any[], ...items: any[]): void {
+	for (const item of items) {
+		if (!array.includes(item)) {
+			array.push(item);
+		}
+	}
+}

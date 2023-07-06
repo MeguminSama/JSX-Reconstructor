@@ -2,12 +2,12 @@ import * as acorn from "acorn";
 import * as walk from "acorn-walk";
 import acornJSX from "acorn-jsx";
 import {
+	outputFileSync as writeFileSync,
 	existsSync,
 	mkdirSync,
-	readdirSync,
 	readFileSync,
-	writeFileSync,
-} from "fs";
+} from "fs-extra";
+import { globSync } from "glob";
 import path from "path";
 import {
 	Program,
@@ -20,23 +20,36 @@ import {
 	Literal,
 	VariableDeclarator,
 	Node,
+	Identifier,
+	ImportDeclaration,
 } from "estree";
 import * as recast from "recast";
 import * as prettier from "prettier";
 
 import ClassParser from "./ClassParser";
 import CallParser from "./CallParser";
-import { isCustomJSXRuntime, parseComponentProps, isBooleanOperator } from "./utils";
+import {
+	isCustomJSXRuntime,
+	parseComponentProps,
+	isBooleanOperator,
+	pushWithoutDuplicates,
+} from "./utils";
+import ImportParser from "./ImportParser";
+import ExportParser from "./ExportParser";
 
 const parser = acorn.Parser.extend(acornJSX());
 
-const files = readdirSync(path.join(process.cwd(), "input")).filter((f) =>
-	f.endsWith(".js")
-);
+if (!existsSync(path.join(process.cwd(), "input"))) {
+	mkdirSync(path.join(process.cwd(), "input"));
+}
 
 if (!existsSync(path.join(process.cwd(), "output"))) {
 	mkdirSync(path.join(process.cwd(), "output"));
 }
+
+const files = globSync(`input/**/*.js`).map((file) =>
+	file.split("\\").slice(1).join("\\")
+);
 
 for (const file of files) {
 	try {
@@ -54,7 +67,7 @@ for (const file of files) {
 			prettier.format(recast.print(parsedAst).code, { parser: "babel" })
 		);
 	} catch (e: any) {
-		console.log(e, `error: ${e.toString()}`);
+		console.log(`error: ${e.toString()}`);
 	}
 }
 
@@ -65,6 +78,11 @@ function parseModule(node: acorn.Node) {
 		(statement) =>
 			statement.type === "FunctionDeclaration" && isCustomJSXRuntime(statement)
 	)! as FunctionDeclaration; // what
+
+	const importParser = new ImportParser(program);
+	const exportParser = new ExportParser(importParser);
+
+	const temporaryImports: ImportDeclaration[] = [];
 
 	walk.ancestor(node, {
 		// @ts-ignore weird typing issues...
@@ -126,6 +144,32 @@ function parseModule(node: acorn.Node) {
 				};
 
 				Object.assign(parent, jsxElement);
+			} else if (
+				node.object &&
+				node.object.type === "Identifier" &&
+				node.object.name !== "exports" &&
+				node.property.type === "Identifier" &&
+				node.property.name === "default"
+			) {
+				Object.assign(node, node.object);
+			} else if (
+				importParser.importIdentifiers.find(
+					(importId) =>
+						node.object &&
+						node.object.type === "Identifier" &&
+						importId.original.name === node.object.name
+				)
+			) {
+				const mappedImportId = importParser.importIdentifiers.find(
+					(importId) =>
+						node.object &&
+						node.object.type === "Identifier" &&
+						importId.original.name === node.object.name
+				)! as { original: Identifier; new: Identifier };
+
+				Object.assign(node, {
+					object: mappedImportId.new,
+				});
 			}
 		},
 
@@ -139,18 +183,25 @@ function parseModule(node: acorn.Node) {
 			if (ancestors.length === 3 && classParser.isClass(node)) {
 				Object.assign(parent, classParser.parse(node, parent));
 			}
+
+			if (importParser.isImport(node)) {
+				pushWithoutDuplicates(
+					temporaryImports,
+					...importParser.parse(node, parent)
+				);
+			}
 		},
 
 		// @ts-ignore
 		ExpressionStatement(node: ExpressionStatement, ancestors: Node[]) {
 			const parent = ancestors[ancestors.length - 2];
-			if (parent.type !== "BlockStatement") return;
 
 			const callParser = new CallParser(customJSXRuntime);
 
 			if (
 				node.expression.type === "AssignmentExpression" &&
 				node.expression.right.type === "CallExpression" &&
+				parent.type === "BlockStatement" &&
 				callParser.isJSXRuntime(node.expression.right.callee)
 			) {
 				Object.assign(node, {
@@ -159,6 +210,10 @@ function parseModule(node: acorn.Node) {
 						right: callParser.recurse(node.expression.right),
 					},
 				});
+			}
+
+			if (exportParser.isExport(node)) {
+				Object.assign(node, exportParser.parse(node, program));
 			}
 		},
 
@@ -282,8 +337,26 @@ function parseModule(node: acorn.Node) {
 				});
 			}
 		},
+
+		// @ts-ignore
+		Identifier(node: Identifier, ancestors: Node[]) {
+			if (
+				importParser.importIdentifiers.find(
+					(importId) => importId.original.name === node.name
+				)
+			) {
+				const mappedImportId = importParser.importIdentifiers.find(
+					(importId) => importId.original.name === node.name
+				)! as { original: Identifier; new: Identifier };
+
+				Object.assign(node, mappedImportId.new);
+			}
+		},
+	});
+
+	Object.assign(program, {
+		body: [...temporaryImports, ...program.body],
 	});
 
 	return node;
 }
-
