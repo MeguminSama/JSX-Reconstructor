@@ -33,8 +33,8 @@ class CallParser {
 							.name === this.customJSXRuntime.id!.name))) ||
 			(node.type === "MemberExpression" &&
 				((node.property as Identifier).name === "createElement" ||
-					(node.property as Identifier).name.endsWith("jsx") ||
-					(node.property as Identifier).name.endsWith("jsxs") ||
+					(node.property as Identifier).name?.endsWith("jsx") ||
+					(node.property as Identifier).name?.endsWith("jsxs") ||
 					(this.customJSXRuntime &&
 						(node.property as Identifier).name ===
 							this.customJSXRuntime.id!.name))) ||
