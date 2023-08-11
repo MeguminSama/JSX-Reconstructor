@@ -9,6 +9,7 @@ import {
 	UnaryExpression,
 } from "estree";
 import * as recast from "recast";
+import { JsxElement } from "typescript";
 
 import { parseComponentProps } from "./utils";
 
@@ -151,6 +152,32 @@ class CallParser {
 							}
 
 							return c;
+						}
+
+						// @ts-ignore
+						case "JSXElement": {
+							return this.recurse(c);
+						}
+
+						case "Literal": {
+							if (typeof c.value === "string" && /[}{]/.test(c.value)) {
+								return {
+									type: "JSXExpressionContainer",
+									expression: {
+										type: "TemplateLiteral",
+										expressions: [],
+										quasis: [
+											{
+												type: "TemplateElement",
+												value: {
+													raw: c.value,
+													cooked: c.value,
+												}
+											}
+										]
+									}
+								}
+							}
 						}
 
 						default: {
