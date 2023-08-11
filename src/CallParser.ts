@@ -37,7 +37,7 @@ class CallParser {
 					(node.property as Identifier).name?.endsWith("jsxs") ||
 					(this.customJSXRuntime &&
 						(node.property as Identifier).name ===
-							this.customJSXRuntime.id!.name))) ||
+						this.customJSXRuntime.id!.name))) ||
 			(node.type === "Identifier" &&
 				(node.name === "createElement" ||
 					node.name.endsWith("jsx") ||
@@ -49,14 +49,19 @@ class CallParser {
 
 	recurse(node: CallExpression): Node {
 		if (
-			// node.object.name === "React" &&
 			this.isJSXRuntime(node.callee)
 		) {
 			const [component, originalProps, ...children]: any[] = node.arguments;
 
+			// These are always defined in source code as `createElement(...)` instead of with JSX
+			if (component.type === "CallExpression" || component.type === "BinaryExpression") {
+				return node;
+			}
+
 			let componentName = component.type === "CallExpression"
 				? recast.print(component.callee).code
 				: recast.print(component).code;
+
 			componentName = componentName.replace(/^"/, "").replace(/"$/, "");
 
 			const selfClosing =
@@ -82,12 +87,12 @@ class CallParser {
 				closingElement: selfClosing
 					? null
 					: {
-							type: "JSXClosingElement",
-							name: {
-								type: "JSXIdentifier",
-								name: componentName,
-							},
-					  },
+						type: "JSXClosingElement",
+						name: {
+							type: "JSXIdentifier",
+							name: componentName,
+						},
+					},
 				children: children.map((c: Node) => {
 					switch (c.type) {
 						case "Identifier": {
@@ -101,9 +106,9 @@ class CallParser {
 							return this.isJSXRuntime(c.callee)
 								? this.recurse(c)
 								: {
-										type: "JSXExpressionContainer",
-										expression: c,
-								  };
+									type: "JSXExpressionContainer",
+									expression: c,
+								};
 						}
 
 						case "ConditionalExpression": {

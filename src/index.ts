@@ -101,6 +101,8 @@ function parseModule(node: acorn.Node) {
 				const [component, originalProps, ...children]: any[] =
 					callExpression.arguments;
 
+				if (component.type === "CallExpression") return;
+
 				let componentName = recast.print(component).code;
 				componentName = componentName.replace(/^"/, "").replace(/"$/, "");
 
@@ -127,12 +129,12 @@ function parseModule(node: acorn.Node) {
 					closingElement: selfClosing
 						? null
 						: {
-								type: "JSXClosingElement",
-								name: {
-									type: "JSXIdentifier",
-									name: componentName,
-								},
-						  },
+							type: "JSXClosingElement",
+							name: {
+								type: "JSXIdentifier",
+								name: componentName,
+							},
+						},
 					children: children.map((c) => {
 						if (c.type === "Identifier" || c.type.endsWith("Expression")) {
 							return {
@@ -303,12 +305,12 @@ function parseModule(node: acorn.Node) {
 					closingElement: selfClosing
 						? null
 						: {
-								type: "JSXClosingElement",
-								name: {
-									type: "JSXIdentifier",
-									name: componentName,
-								},
-						  },
+							type: "JSXClosingElement",
+							name: {
+								type: "JSXIdentifier",
+								name: componentName,
+							},
+						},
 					children: children.map((c) => {
 						if (c.type === "Identifier" || c.type.endsWith("Expression")) {
 							return {
