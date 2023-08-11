@@ -24,4 +24,4 @@ This code is extremely shit and WIP. Please do give it a try and create an issue
 2. Create a folder called `input` and place your `.js` files in there.
 3. Run `npm run start`
 
-Copyright &copy; 2022, https://github.com/MeguminSama
+Copyright &copy; 2023, https://github.com/MeguminSama & https://github.com/vftable

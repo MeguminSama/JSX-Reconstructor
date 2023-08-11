@@ -2,250 +2,364 @@ import * as acorn from "acorn";
 import * as walk from "acorn-walk";
 import acornJSX from "acorn-jsx";
 import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "fs";
+	outputFileSync as writeFileSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+} from "fs-extra";
+import { globSync } from "glob";
 import path from "path";
-import { CallExpression, MemberExpression, Node } from "estree";
+import {
+	Program,
+	CallExpression,
+	MemberExpression,
+	SequenceExpression,
+	UnaryExpression,
+	FunctionDeclaration,
+	ExpressionStatement,
+	Literal,
+	VariableDeclarator,
+	Node,
+	Identifier,
+	ImportDeclaration,
+} from "estree";
 import * as recast from "recast";
+import * as prettier from "prettier";
+
+import ClassParser from "./ClassParser";
+import CallParser from "./CallParser";
+import {
+	isCustomJSXRuntime,
+	parseComponentProps,
+	isBooleanOperator,
+	pushWithoutDuplicates,
+} from "./utils";
+import ImportParser from "./ImportParser";
+import ExportParser from "./ExportParser";
 
 const parser = acorn.Parser.extend(acornJSX());
 
-const files = readdirSync(path.join(process.cwd(), "input")).filter((f) =>
-  f.endsWith(".js")
-);
-
-if (!existsSync(path.join(process.cwd(), "output"))) {
-  mkdirSync(path.join(process.cwd(), "output"));
+if (!existsSync(path.join(process.cwd(), "input"))) {
+	mkdirSync(path.join(process.cwd(), "input"));
 }
 
+if (!existsSync(path.join(process.cwd(), "output"))) {
+	mkdirSync(path.join(process.cwd(), "output"));
+}
+
+const files = globSync(`input/**/*.js`).map((file) =>
+	file.split("\\").slice(1).join("\\")
+);
+
 for (const file of files) {
-  // if (file !== "1445.js") continue; // DEBUG
-  console.log(file);
-  const filePath = path.join(process.cwd(), "input", file);
-  const data = readFileSync(filePath, "utf-8");
-  const ast = parser.parse(data, {
-    sourceType: "module",
-    ecmaVersion: "latest",
-  });
-  writeFileSync(
-    path.join(process.cwd(), "output", `${file}x`),
-    recast.print(parseModule(ast)).code
-  );
+	try {
+		console.log(file);
+		const filePath = path.join(process.cwd(), "input", file);
+		const data = readFileSync(filePath, "utf-8");
+		const ast = parser.parse(data, {
+			sourceType: "module",
+			ecmaVersion: "latest",
+			preserveParens: true,
+		});
+		const parsedAst = parseModule(ast);
+
+		writeFileSync(
+			path.join(process.cwd(), "output", `${file}x`),
+			prettier.format(recast.print(parsedAst).code, { parser: "babel" })
+		);
+	} catch (e: any) {
+		console.log(`error: ${e.toString()}`);
+	}
 }
 
 function parseModule(node: acorn.Node) {
-  walk.ancestor(node, {
-    // @ts-ignore weird typing issues...
-    MemberExpression(node: MemberExpression, ancestors: Node[]) {
-      if (
-        node.object.type === "Identifier" &&
-        // node.object.name === "React" &&
-        node.property.type === "Identifier" &&
-        node.property.name === "createElement"
-      ) {
-        const parent = ancestors[ancestors.length - 2];
-        if (parent.type !== "CallExpression") return;
+	var program = node as unknown as Program;
 
-        const callExpression = parent as CallExpression;
-        const [component, originalProps, ...children]: any[] =
-          callExpression.arguments;
+	const customJSXRuntime = program.body.find(
+		(statement) =>
+			statement.type === "FunctionDeclaration" && isCustomJSXRuntime(statement)
+	)! as FunctionDeclaration; // what
 
-        let componentName = recast.print(component).code;
-        componentName = componentName.replace(/^"/, "").replace(/"$/, "");
+	const importParser = new ImportParser(program);
+	const exportParser = new ExportParser(importParser);
 
-        const selfClosing = children.length === 0;
+	const temporaryImports: ImportDeclaration[] = [];
 
-        const attributes: any[] = parseComponentProps(originalProps);
+	walk.ancestor(node, {
+		// @ts-ignore weird typing issues...
+		MemberExpression(node: MemberExpression, ancestors: Node[]) {
+			if (
+				node.object.type === "Identifier" &&
+				// node.object.name === "React" &&
+				node.property.type === "Identifier" &&
+				node.property.name === "createElement"
+			) {
+				const parent = ancestors[ancestors.length - 2];
+				if (parent.type !== "CallExpression") return;
 
-        const jsxElement = {
-          type: "JSXElement",
-          openingElement: {
-            type: "JSXOpeningElement",
-            name: {
-              type: "JSXIdentifier",
-              name: componentName,
-            },
-            attributes: attributes,
-            selfClosing: selfClosing,
-          },
-          closingElement: selfClosing
-            ? null
-            : {
-                type: "JSXClosingElement",
-                name: {
-                  type: "JSXIdentifier",
-                  name: componentName,
-                },
-              },
-          children: children.map((c) => {
-            if (c.type === "Identifier" || c.type.endsWith("Expression")) {
-              return {
-                type: "JSXExpressionContainer",
-                expression: c,
-              };
-            }
-            return c;
-          }),
-        };
+				const callExpression = parent as CallExpression;
+				const [component, originalProps, ...children]: any[] =
+					callExpression.arguments;
 
-        Object.assign(parent, jsxElement);
-      }
-    },
-  });
+				if (component.type === "CallExpression") return;
 
-  return node;
-}
+				let componentName = recast.print(component).code;
+				componentName = componentName.replace(/^"/, "").replace(/"$/, "");
 
-function isSpreadOperator(node: CallExpression) {
-  return (
-    (node.callee.type === "Identifier" ||
-      node.callee.type === "SequenceExpression") &&
-    node.arguments.length >= 2
-  );
-}
+				const selfClosing =
+					children.filter((child) =>
+						child.type === "UnaryExpression"
+							? (child as UnaryExpression).operator !== "void"
+							: child
+					).length === 0;
 
-///
-/// Spread operators end up like Y({}, props, {[key]: value})
-/// This is equivalent to:
-/// Object.assign({}, props, {[key]: value})
-/// So we want to turn it into:
-/// { ...props, [key]: value }
-function parseSpreadOperator(node: CallExpression) {
-  const returnNodes: any[] = [];
+				const attributes: any[] = parseComponentProps(originalProps);
 
-  for (const argument of node.arguments) {
-    if (argument.type === "Identifier") {
-      returnNodes.push({
-        type: "JSXSpreadAttribute",
-        argument,
-      });
-      continue;
-    }
-    returnNodes.push(...parseComponentProps(argument, true));
-  }
+				const jsxElement = {
+					type: "JSXElement",
+					openingElement: {
+						type: "JSXOpeningElement",
+						name: {
+							type: "JSXIdentifier",
+							name: componentName,
+						},
+						attributes: attributes,
+						selfClosing: selfClosing,
+					},
+					closingElement: selfClosing
+						? null
+						: {
+							type: "JSXClosingElement",
+							name: {
+								type: "JSXIdentifier",
+								name: componentName,
+							},
+						},
+					children: children.map((c) => {
+						if (c.type === "Identifier" || c.type.endsWith("Expression")) {
+							return {
+								type: "JSXExpressionContainer",
+								expression: c,
+							};
+						}
+						return c;
+					}),
+				};
 
-  return returnNodes;
-}
+				Object.assign(parent, jsxElement);
+			} else if (
+				node.object &&
+				node.object.type === "Identifier" &&
+				node.object.name !== "exports" &&
+				node.property.type === "Identifier" &&
+				node.property.name === "default"
+			) {
+				Object.assign(node, node.object);
+			} else if (
+				importParser.importIdentifiers.find(
+					(importId) =>
+						node.object &&
+						node.object.type === "Identifier" &&
+						importId.original.name === node.object.name
+				)
+			) {
+				const mappedImportId = importParser.importIdentifiers.find(
+					(importId) =>
+						node.object &&
+						node.object.type === "Identifier" &&
+						importId.original.name === node.object.name
+				)! as { original: Identifier; new: Identifier };
 
-function parseComponentProps(originalProps: any, inSpread = false) {
-  const attributes: any[] = [];
+				Object.assign(node, {
+					object: mappedImportId.new,
+				});
+			}
+		},
 
-  if (!originalProps) {
-    return [];
-  }
+		// @ts-ignore
+		VariableDeclarator(node: VariableDeclarator, ancestors: Node[]) {
+			const parent = ancestors[ancestors.length - 2];
+			if (parent.type !== "VariableDeclaration") return;
 
-  if (originalProps.type === "ObjectExpression") {
-    for (const prop of originalProps.properties) {
-      if (prop.type !== "Property") {
-        console.error(prop);
-        throw new Error();
-      }
+			const classParser = new ClassParser();
 
-      const type = "JSXAttribute";
-      const name = {
-        type: "JSXIdentifier",
-        name: prop.key.name || prop.key.value,
-      };
+			if (ancestors.length === 3 && classParser.isClass(node)) {
+				Object.assign(parent, classParser.parse(node, parent));
+			}
 
-      if (!name.name) console.log(prop);
+			if (importParser.isImport(node)) {
+				pushWithoutDuplicates(
+					temporaryImports,
+					...importParser.parse(node, parent)
+				);
+			}
+		},
 
-      const isSelfIdentifying =
-        prop.value.type === "Identifier" && prop.value.name === prop.key.name;
+		// @ts-ignore
+		ExpressionStatement(node: ExpressionStatement, ancestors: Node[]) {
+			const parent = ancestors[ancestors.length - 2];
 
-      const value = isSelfIdentifying ? null : prop.value;
-      attributes.push({
-        type,
-        name,
-        value: { type: "JSXExpressionContainer", expression: value },
-      });
-    }
-  } else if (originalProps.type === "Identifier") {
-    attributes.push({
-      type: "JSXSpreadAttribute",
-      argument: originalProps,
-    });
-  } else if (originalProps.type === "Literal") {
-    if (originalProps.value === null) {
-      // do nothing
-    } else {
-      // console.log(originalProps);
-      // attributes.push(originalProps);
-      // throw new Error();
-    }
-  } else if (originalProps.type === "CallExpression") {
-    if (isSpreadOperator(originalProps) && !inSpread) {
-      const op = parseSpreadOperator(originalProps);
-      attributes.push(...op);
-    } else {
-      attributes.push({
-        type: "JSXSpreadAttribute",
-        argument: originalProps,
-      });
-      // throw new Error();
-    }
-  } else if (originalProps.type === "Property") {
-    let key = "";
-    if (originalProps.key.type === "Identifier") {
-      key = originalProps.key.name;
-    } else if (originalProps.key.type === "Literal") {
-      key = originalProps.key.value;
-    } else {
-      console.log(originalProps);
-      throw new Error();
-    }
+			const callParser = new CallParser(customJSXRuntime);
 
-    let value = {
-      type: "Literal",
-      value: originalProps.value.value,
-    };
-    if (originalProps.value.type !== "Literal") {
-      value = {
-        type: "JSXExpressionContainer",
-        // @ts-ignore
-        expression: originalProps.value,
-      };
-    }
+			if (
+				node.expression.type === "AssignmentExpression" &&
+				node.expression.right.type === "CallExpression" &&
+				parent.type === "BlockStatement" &&
+				callParser.isJSXRuntime(node.expression.right.callee)
+			) {
+				Object.assign(node, {
+					expression: {
+						...node.expression,
+						right: callParser.recurse(node.expression.right),
+					},
+				});
+			}
 
-    attributes.push({
-      type: "JSXAttribute",
-      name: {
-        type: "JSXIdentifier",
-        name: key,
-      },
-      value,
-    });
-  } else if (originalProps.type === "MemberExpression") {
-    attributes.push({
-      type: "JSXSpreadAttribute",
-      argument: {
-        type: "Identifier",
-        name: recast.print(originalProps).code,
-      },
-    });
-  } else if (originalProps.type === "ConditionalExpression") {
-    attributes.push({
-      type: "JSXSpreadAttribute",
-      argument: originalProps,
-    });
-  } else if (originalProps.type === "LogicalExpression") {
-    attributes.push({
-      type: "JSXSpreadAttribute",
-      argument: originalProps,
-    });
-  } else {
-    if (inSpread) {
-      attributes.push({
-        type: "JSXSpreadAttribute",
-        argument: originalProps,
-      });
-    } else {
-      throw new Error();
-    }
-  }
+			if (exportParser.isExport(node)) {
+				Object.assign(node, exportParser.parse(node, program));
+			}
+		},
 
-  return attributes;
+		// @ts-ignore
+		FunctionDeclaration(node: FunctionDeclaration, ancestors: Node[]) {
+			var displayName = program.body[
+				program.body.findIndex(
+					(statement) =>
+						node &&
+						statement.type === "ExpressionStatement" &&
+						statement.expression.type === "AssignmentExpression" &&
+						statement.expression.left.type === "MemberExpression" &&
+						statement.expression.left.object.type === "Identifier" &&
+						statement.expression.left.object.name === node.id!.name &&
+						statement.expression.left.property.type === "Identifier" &&
+						statement.expression.left.property.name === "displayName"
+				)
+			]! as ExpressionStatement;
+
+			if (
+				displayName &&
+				displayName.type === "ExpressionStatement" &&
+				displayName.expression.type === "AssignmentExpression" &&
+				displayName.expression.left.type === "MemberExpression" &&
+				displayName.expression.left.object.type === "Identifier" &&
+				displayName.expression.left.property.type === "Identifier" &&
+				displayName.expression.right.type === "Literal"
+			) {
+				node.id!.name = displayName.expression.right.value! as string;
+				displayName.expression.left.object.name = displayName.expression.right
+					.value! as string;
+			}
+		},
+
+		// @ts-ignore - recursive React.createElement parser
+		CallExpression(node: CallExpression, ancestors: Node[]) {
+			const parent = ancestors[ancestors.length - 2];
+			if (parent.type !== "ReturnStatement") return;
+
+			const callParser = new CallParser(customJSXRuntime);
+			Object.assign(parent, callParser.parse(node, parent));
+		},
+
+		// @ts-ignore - replaces Babel artifacts like (0, React.createElement) with React.createElement
+		SequenceExpression(node: SequenceExpression, ancestors: Node[]) {
+			const proxiedMemberExpression = node.expressions[1]! as MemberExpression;
+			if (
+				proxiedMemberExpression &&
+				proxiedMemberExpression.object &&
+				proxiedMemberExpression.object.type === "Identifier" &&
+				// node.object.name === "React" &&
+				proxiedMemberExpression.property.type === "Identifier" &&
+				(proxiedMemberExpression.property.name.endsWith("jsx") ||
+					proxiedMemberExpression.property.name.endsWith("jsxs"))
+			) {
+				const parent = ancestors[ancestors.length - 2];
+				if (parent.type !== "CallExpression") return;
+
+				const callExpression = parent as CallExpression;
+				const [component, originalProps, ...children]: any[] =
+					callExpression.arguments;
+
+				let componentName = recast.print(component).code;
+				componentName = componentName.replace(/^"/, "").replace(/"$/, "");
+
+				const selfClosing =
+					children.filter((child) =>
+						child.type === "UnaryExpression"
+							? (child as UnaryExpression).operator !== "void"
+							: child
+					).length === 0;
+
+				const attributes: any[] = parseComponentProps(originalProps);
+
+				const jsxElement = {
+					type: "JSXElement",
+					openingElement: {
+						type: "JSXOpeningElement",
+						name: {
+							type: "JSXIdentifier",
+							name: componentName,
+						},
+						attributes: attributes,
+						selfClosing: selfClosing,
+					},
+					closingElement: selfClosing
+						? null
+						: {
+							type: "JSXClosingElement",
+							name: {
+								type: "JSXIdentifier",
+								name: componentName,
+							},
+						},
+					children: children.map((c) => {
+						if (c.type === "Identifier" || c.type.endsWith("Expression")) {
+							return {
+								type: "JSXExpressionContainer",
+								expression: c,
+							};
+						}
+						return c;
+					}),
+				};
+
+				Object.assign(parent, jsxElement);
+			} else {
+				const parent = ancestors[ancestors.length - 2];
+				if (parent.type !== "CallExpression") return;
+
+				Object.assign(parent, { callee: proxiedMemberExpression });
+			}
+		},
+
+		// @ts-ignore - replaces !0 and !1 with true and false
+		UnaryExpression(node: UnaryExpression, ancestors: Node[]) {
+			if (isBooleanOperator(node)) {
+				Object.assign(node, {
+					type: "Literal",
+					value: !!!(node.argument as Literal).value,
+				});
+			}
+		},
+
+		// @ts-ignore
+		Identifier(node: Identifier, ancestors: Node[]) {
+			if (
+				importParser.importIdentifiers.find(
+					(importId) => importId.original.name === node.name
+				)
+			) {
+				const mappedImportId = importParser.importIdentifiers.find(
+					(importId) => importId.original.name === node.name
+				)! as { original: Identifier; new: Identifier };
+
+				Object.assign(node, mappedImportId.new);
+			}
+		},
+	});
+
+	Object.assign(program, {
+		body: [...temporaryImports, ...program.body],
+	});
+
+	return node;
 }
