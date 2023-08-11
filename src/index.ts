@@ -59,6 +59,7 @@ for (const file of files) {
 		const ast = parser.parse(data, {
 			sourceType: "module",
 			ecmaVersion: "latest",
+			preserveParens: true,
 		});
 		const parsedAst = parseModule(ast);
 
