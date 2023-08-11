@@ -61,6 +61,13 @@ export function parseComponentProps(originalProps: any, inSpread = false): any[]
 	switch (originalProps.type) {
 		case "ObjectExpression": {
 			for (const prop of originalProps.properties) {
+				if (prop.type === "SpreadElement") {
+					attributes.push({
+						type: "JSXSpreadAttribute",
+						argument: prop.argument,
+					});
+					continue;
+				}
 				if (prop.type !== "Property") {
 					console.error(prop);
 					throw new Error();

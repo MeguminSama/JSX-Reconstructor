@@ -33,8 +33,8 @@ class CallParser {
 							.name === this.customJSXRuntime.id!.name))) ||
 			(node.type === "MemberExpression" &&
 				((node.property as Identifier).name === "createElement" ||
-					(node.property as Identifier).name.endsWith("jsx") ||
-					(node.property as Identifier).name.endsWith("jsxs") ||
+					(node.property as Identifier).name?.endsWith("jsx") ||
+					(node.property as Identifier).name?.endsWith("jsxs") ||
 					(this.customJSXRuntime &&
 						(node.property as Identifier).name ===
 							this.customJSXRuntime.id!.name))) ||
@@ -54,7 +54,9 @@ class CallParser {
 		) {
 			const [component, originalProps, ...children]: any[] = node.arguments;
 
-			let componentName = recast.print(component).code;
+			let componentName = component.type === "CallExpression"
+				? recast.print(component.callee).code
+				: recast.print(component).code;
 			componentName = componentName.replace(/^"/, "").replace(/"$/, "");
 
 			const selfClosing =
