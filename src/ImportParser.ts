@@ -95,13 +95,15 @@ class ImportParser {
 							local: {
 								...node.id,
 								name:
-									(node.id.name.startsWith("_")
+									(node.id.name.length > 1 &&
+										node.id.name.startsWith("_")
 										? node.id.name.substring(1)
 										: node.id.name
 									)
 										.charAt(0)
 										.toUpperCase() +
-									(node.id.name.startsWith("_")
+									(node.id.name.length > 1 &&
+										node.id.name.startsWith("_")
 										? node.id.name.substring(1)
 										: node.id.name
 									).slice(1),
@@ -114,13 +116,15 @@ class ImportParser {
 					new: {
 						...node.id,
 						name:
-							(node.id.name.startsWith("_")
+							(node.id.name.length > 1 &&
+								node.id.name.startsWith("_")
 								? node.id.name.substring(1)
 								: node.id.name
 							)
 								.charAt(0)
 								.toUpperCase() +
-							(node.id.name.startsWith("_")
+							(node.id.name.length > 1 &&
+								node.id.name.startsWith("_")
 								? node.id.name.substring(1)
 								: node.id.name
 							).slice(1),
@@ -141,13 +145,15 @@ class ImportParser {
 							local: {
 								...node.id,
 								name:
-									(node.id.name.startsWith("_")
+									(node.id.name.length > 1 &&
+										node.id.name.startsWith("_")
 										? node.id.name.substring(1)
 										: node.id.name
 									)
 										.charAt(0)
 										.toUpperCase() +
-									(node.id.name.startsWith("_")
+									(node.id.name.length > 1 &&
+										node.id.name.startsWith("_")
 										? node.id.name.substring(1)
 										: node.id.name
 									).slice(1),
@@ -160,13 +166,15 @@ class ImportParser {
 					new: {
 						...node.id,
 						name:
-							(node.id.name.startsWith("_")
+							(node.id.name.length > 1 &&
+								node.id.name.startsWith("_")
 								? node.id.name.substring(1)
 								: node.id.name
 							)
 								.charAt(0)
 								.toUpperCase() +
-							(node.id.name.startsWith("_")
+							(node.id.name.length > 1 &&
+								node.id.name.startsWith("_")
 								? node.id.name.substring(1)
 								: node.id.name
 							).slice(1),
@@ -187,13 +195,15 @@ class ImportParser {
 							local: {
 								...node.id,
 								name:
-									(node.id.name.startsWith("_")
+									(node.id.name.length > 1 &&
+										node.id.name.startsWith("_")
 										? node.id.name.substring(1)
 										: node.id.name
 									)
 										.charAt(0)
 										.toUpperCase() +
-									(node.id.name.startsWith("_")
+									(node.id.name.length > 1 &&
+										node.id.name.startsWith("_")
 										? node.id.name.substring(1)
 										: node.id.name
 									).slice(1),
@@ -206,13 +216,15 @@ class ImportParser {
 					new: {
 						...node.id,
 						name:
-							(node.id.name.startsWith("_")
+							(node.id.name.length > 1 &&
+								node.id.name.startsWith("_")
 								? node.id.name.substring(1)
 								: node.id.name
 							)
 								.charAt(0)
 								.toUpperCase() +
-							(node.id.name.startsWith("_")
+							(node.id.name.length > 1 &&
+								node.id.name.startsWith("_")
 								? node.id.name.substring(1)
 								: node.id.name
 							).slice(1),
