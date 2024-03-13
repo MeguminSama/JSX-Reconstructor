@@ -1,534 +1,1865 @@
 import {
-	Identifier,
-	MemberExpression,
-	VariableDeclarator,
-	VariableDeclaration,
-	ClassDeclaration,
-	MethodDefinition,
-	ObjectExpression,
-	Property,
-	FunctionExpression,
+  Identifier,
+  MemberExpression,
+  VariableDeclarator,
+  VariableDeclaration,
+  ClassDeclaration,
+  MethodDefinition,
+  Node,
+  FunctionExpression,
+  CallExpression,
+  FunctionDeclaration,
+  ReturnStatement,
+  Statement,
+  NewExpression,
 } from "estree";
+import * as walk from "acorn-walk";
+import * as recast from "recast";
+
+import { ParenthesizedExpression } from ".";
+
+export enum ClassType {
+  Invalid = -1,
+  Class = 0,
+  ParenthesizedClass = 1,
+  WrappedClass = 2,
+  NewClass = 3,
+}
 
 class ClassParser {
-	mirroredProperties: Identifier[];
-	mirroredSelfProperties: {
-		identifier: Identifier;
-		memberExpression: MemberExpression;
-	}[];
-	getters: MethodDefinition[];
+  mirroredProperties: Identifier[];
+  mirroredSelfProperties: {
+    identifier: Identifier;
+    memberExpression: MemberExpression;
+  }[];
+  getters: MethodDefinition[];
+  candidateMap: Map<
+    string,
+    { proto: VariableDeclaration; constructor: FunctionDeclaration }
+  >;
 
-	constructor() {
-		this.mirroredProperties = [];
-		this.mirroredSelfProperties = [];
-		this.getters = [];
-	}
+  constructor() {
+    this.mirroredProperties = [];
+    this.mirroredSelfProperties = [];
+    this.getters = [];
+    this.candidateMap = new Map();
+  }
 
-	isClass(node: VariableDeclarator): boolean {
-		return !!(
-			node.id &&
-			node.id.type === "Identifier" &&
-			node.init &&
-			node.init.type === "CallExpression" &&
-			node.init.callee &&
-			node.init.callee.type === "FunctionExpression" &&
-			node.init.callee.params.length === node.init.arguments.length &&
-			node.init.callee.body.body[0].type === "ExpressionStatement"
-		);
-	}
+  getClassType(node: VariableDeclarator): ClassType {
+    if (
+      node.id &&
+      node.id.type === "Identifier" &&
+      node.init &&
+      (node.init.type === "CallExpression" ||
+        node.init.type === "NewExpression") &&
+      node.init.callee
+    ) {
+      if (
+        (node.init.callee as any as ParenthesizedExpression).type ===
+          "ParenthesizedExpression" &&
+        (node.init.callee as any as ParenthesizedExpression).expression &&
+        (node.init.callee as any as ParenthesizedExpression).expression.type ===
+          "CallExpression" &&
+        (
+          (node.init.callee as any as ParenthesizedExpression)
+            .expression as any as CallExpression
+        ).callee.type === "FunctionExpression" &&
+        (
+          (
+            (node.init.callee as any as ParenthesizedExpression)
+              .expression as any as CallExpression
+          ).callee as any as FunctionExpression
+        ).params.length === node.init.arguments.length &&
+        (
+          (
+            (node.init.callee as any as ParenthesizedExpression)
+              .expression as any as CallExpression
+          ).callee as any as FunctionExpression
+        ).body.body[0].type === "ExpressionStatement"
+      ) {
+        return ClassType.NewClass;
+      }
 
-	parse(
-		node: VariableDeclarator,
-		parent: VariableDeclaration
-	): ClassDeclaration {
-		if (
-			node.id &&
-			node.id.type === "Identifier" &&
-			node.init &&
-			node.init.type === "CallExpression" &&
-			node.init.arguments[0] &&
-			node.init.arguments[0].type === "MemberExpression" &&
-			node.init.callee &&
-			node.init.callee.type === "FunctionExpression" &&
-			node.init.callee.params.length === node.init.arguments.length &&
-			node.init.callee.body.body[0].type === "ExpressionStatement"
-		) {
-			node.init.callee.body.body.shift(); // inheritsLoose
+      if (
+        (node.init.callee as any as ParenthesizedExpression).type ===
+          "ParenthesizedExpression" &&
+        (node.init.callee as any as ParenthesizedExpression).expression &&
+        (node.init.callee as any as ParenthesizedExpression).expression.type ===
+          "FunctionExpression" &&
+        (
+          (node.init.callee as any as ParenthesizedExpression)
+            .expression as any as FunctionExpression
+        ).params.length === node.init.arguments.length &&
+        (
+          (node.init.callee as any as ParenthesizedExpression)
+            .expression as any as FunctionExpression
+        ).body.body[0].type === "ExpressionStatement"
+      ) {
+        return ClassType.ParenthesizedClass;
+      }
 
-			return {
-				...node,
-				id: node.id as unknown as Identifier,
-				type: "ClassDeclaration",
-				superClass: node.init.arguments[0] as unknown as MemberExpression,
-				body: {
-					...node.init.callee.body,
-					type: "ClassBody",
-					body: [
-						...(node.init.callee.body.body.map((expression) => {
-							switch (expression.type) {
-								case "FunctionDeclaration": {
-									if (
-										expression.body.body[0] &&
-										expression.body.body[0].type === "ReturnStatement"
-									) {
-										return Object.assign(expression, {
-											type: "EmptyStatement",
-										});
-									} else if (
-										node.id.type === "Identifier" &&
-										node.id.name === expression.id!.name
-									) {
-										var superDeclaratorCopy: any;
-										var superDeclarator = expression.body.body.find(
-											(superExpression) => {
-												return (
-													superExpression.type === "ExpressionStatement" &&
-													superExpression.expression.type ===
-														"AssignmentExpression" &&
-													superExpression.expression.right.type ===
-														"LogicalExpression" &&
-													superExpression.expression.right.left.type ===
-														"CallExpression" &&
-													superExpression.expression.right.left.callee.type ===
-														"MemberExpression" &&
-													superExpression.expression.right.left.callee.object
-														.type === "Identifier" &&
-													node.id &&
-													node.id.type === "Identifier" &&
-													node.init &&
-													node.init.type === "CallExpression" &&
-													node.init.callee &&
-													node.init.callee.type === "FunctionExpression" &&
-													node.init.callee.params[0] &&
-													node.init.callee.params[0].type === "Identifier" &&
-													superExpression.expression.right.left.callee.object
-														.name === node.init.callee.params[0].name
-												);
-											}
-										);
+      if (node.init.callee.type === "FunctionExpression") {
+        const constructorCandidates = node.init.callee.body.body.filter(
+          (statement) => statement.type === "FunctionDeclaration"
+        ) as any[] as FunctionDeclaration[];
 
-										if (
-											superDeclarator &&
-											superDeclarator.type === "ExpressionStatement"
-										)
-											superDeclaratorCopy = Object.assign({}, superDeclarator);
+        for (const candidate of constructorCandidates) {
+          if (!(candidate.id && candidate.id.type === "Identifier")) continue;
 
-										return Object.assign(expression, {
-											type: "MethodDefinition",
-											key: {
-												...expression.id,
-												name: "constructor",
-											},
-											static: false,
-											kind: "constructor",
-											value: {
-												...expression,
-												type: "FunctionExpression",
-												body: {
-													...expression.body,
-													body: [
-														superDeclarator && {
-															type: "ExpressionStatement",
-															expression: {
-																type: "CallExpression",
-																callee: {
-																	type: "Super",
-																},
-																arguments: expression.params,
-																optional: false,
-															},
-														},
-														...expression.body.body.map((statement) => {
-															if (
-																(superDeclarator &&
-																	statement === superDeclarator) ||
-																statement.type === "ReturnStatement" ||
-																(superDeclaratorCopy &&
-																	superDeclaratorCopy.type ===
-																		"ExpressionStatement" &&
-																	superDeclaratorCopy.expression.type ===
-																		"AssignmentExpression" &&
-																	superDeclaratorCopy.expression.left.type ===
-																		"Identifier" &&
-																	statement.type === "VariableDeclaration" &&
-																	statement.declarations[0] &&
-																	statement.declarations[0].id.type ===
-																		"Identifier" &&
-																	statement.declarations[0].id.name ===
-																		superDeclaratorCopy.expression.left.name) ||
-																(statement.type === "ExpressionStatement" &&
-																	statement.expression.type ===
-																		"AssignmentExpression" &&
-																	statement.expression.right.type ===
-																		"CallExpression" &&
-																	statement.expression.right.callee.type ===
-																		"MemberExpression" &&
-																	statement.expression.right.callee.property
-																		.type === "Identifier" &&
-																	statement.expression.right.callee.property
-																		.name === "bind")
-															) {
-																return Object.assign(statement, {
-																	type: "EmptyStatement",
-																});
-															}
+          const protoNode =
+            node.init.callee.body.body[
+              node.init.callee.body.body.indexOf(candidate) + 1
+            ];
 
-															if (
-																superDeclaratorCopy &&
-																superDeclaratorCopy.type ===
-																	"ExpressionStatement" &&
-																superDeclaratorCopy.expression.type ===
-																	"AssignmentExpression" &&
-																superDeclaratorCopy.expression.left.type ===
-																	"Identifier" &&
-																statement.type === "ExpressionStatement" &&
-																statement.expression.type ===
-																	"AssignmentExpression" &&
-																statement.expression.left.type ===
-																	"MemberExpression" &&
-																statement.expression.left.object.type ===
-																	"Identifier" &&
-																statement.expression.left.object.name ===
-																	superDeclaratorCopy.expression.left.name
-															) {
-																return Object.assign(statement, {
-																	expression: {
-																		...statement.expression,
-																		left: {
-																			...statement.expression.left,
-																			object: {
-																				...statement.expression.left.object,
-																				type: "ThisExpression",
-																			},
-																		},
-																	},
-																});
-															}
+          if (
+            !(
+              protoNode &&
+              protoNode.type === "VariableDeclaration" &&
+              protoNode.declarations[0].init &&
+              protoNode.declarations[0].init.type === "MemberExpression" &&
+              protoNode.declarations[0].init.object &&
+              protoNode.declarations[0].init.object.type === "Identifier" &&
+              protoNode.declarations[0].init.object.name ===
+                candidate.id.name &&
+              protoNode.declarations[0].init.property &&
+              protoNode.declarations[0].init.property.type === "Identifier" &&
+              protoNode.declarations[0].init.property.name === "prototype"
+            )
+          )
+            continue;
 
-															return statement;
-														}),
-													],
-												},
-											},
-										});
-									}
+          if (
+            node.init.callee.body.body[node.init.callee.body.body.length - 1]
+              .type === "ReturnStatement"
+          ) {
+            const returnStatement = node.init.callee.body.body[
+              node.init.callee.body.body.length - 1
+            ] as ReturnStatement;
 
-									expression.body.body.map((embeddedExpression) => {
-										if (
-											embeddedExpression &&
-											embeddedExpression.type === "VariableDeclaration"
-										) {
-											const declarations = embeddedExpression.declarations
-												.map((declarator) => {
-													if (
-														declarator.init &&
-														declarator.init.type === "MemberExpression" &&
-														declarator.init.object &&
-														declarator.init.object.type === "ThisExpression"
-													) {
-														this.mirroredSelfProperties.push({
-															identifier: declarator.id as Identifier,
-															memberExpression:
-																declarator.init as MemberExpression,
-														});
-													} else if (
-														declarator.init &&
-														declarator.init.type === "MemberExpression" &&
-														declarator.init.object &&
-														declarator.init.object.type === "Identifier" &&
-														declarator.init.object.name ===
-															(node.id as Identifier).name
-													) {
-														this.mirroredProperties.push(
-															declarator.id as Identifier
-														);
+            if (
+              !(
+                returnStatement.argument &&
+                returnStatement.argument.type === "Identifier"
+              )
+            )
+              continue;
 
-														return Object.assign(declarator, {
-															type: "EmptyStatement",
-														});
-													} else if (
-														declarator.init &&
-														declarator.init.type === "MemberExpression" &&
-														declarator.init.object &&
-														declarator.init.object.type === "Identifier" &&
-														this.mirroredSelfProperties.find(
-															(prop) =>
-																declarator.init &&
-																declarator.init.type === "MemberExpression" &&
-																declarator.init.object &&
-																declarator.init.object.type === "Identifier" &&
-																declarator.init.object.name ===
-																	prop.identifier.name
-														)
-													) {
-														return Object.assign(declarator, {
-															init: {
-																...declarator.init,
-																object: this.mirroredSelfProperties.find(
-																	(prop) =>
-																		declarator.init &&
-																		declarator.init.type ===
-																			"MemberExpression" &&
-																		declarator.init.object &&
-																		declarator.init.object.type ===
-																			"Identifier" &&
-																		declarator.init.object.name ===
-																			prop.identifier.name
-																)!.memberExpression,
-															},
-														});
-													}
+            const returnArgument = returnStatement.argument! as Identifier;
 
-													return declarator;
-												})
-												.filter((declaration) => declaration);
+            if (returnArgument.name === candidate.id.name) {
+              this.candidateMap.set(node.id.name, {
+                proto: protoNode,
+                constructor: candidate,
+              });
+              return ClassType.Class;
+            }
+          }
+        }
 
-											return Object.assign(
-												embeddedExpression,
-												declarations.length >= 1
-													? {
-															declarations,
-													  }
-													: {
-															type: "EmptyStatment",
-													  }
-											);
-										}
+        return ClassType.Invalid;
+      }
+    }
 
-										return embeddedExpression;
-									});
+    return ClassType.Invalid;
+  }
 
-									return Object.assign(expression, {
-										type: "MethodDefinition",
-										key: expression.id,
-										static: false,
-										kind: "method",
-										value: {
-											...expression,
-											type: "FunctionExpression",
-										},
-									});
-								}
-								case "VariableDeclaration": {
-									const declarations = expression.declarations
-										.map((declarator) => {
-											if (
-												declarator.init &&
-												declarator.init.type === "MemberExpression" &&
-												declarator.init.object &&
-												declarator.init.object.type === "ThisExpression"
-											) {
-												this.mirroredSelfProperties.push({
-													identifier: declarator.id as Identifier,
-													memberExpression: declarator.init as MemberExpression,
-												});
-											} else if (
-												declarator.init &&
-												declarator.init.type === "MemberExpression" &&
-												declarator.init.object &&
-												declarator.init.object.type === "Identifier" &&
-												declarator.init.object.name ===
-													(node.id as Identifier).name
-											) {
-												this.mirroredProperties.push(
-													declarator.id as Identifier
-												);
+  parse(
+    node: VariableDeclarator,
+    parent: VariableDeclaration
+  ): ClassDeclaration {
+    const classType = this.getClassType(node);
 
-												return null;
-											} else if (
-												declarator.init &&
-												declarator.init.type === "MemberExpression" &&
-												declarator.init.object &&
-												declarator.init.object.type === "Identifier" &&
-												this.mirroredSelfProperties.find(
-													(prop) =>
-														declarator.init &&
-														declarator.init.type === "MemberExpression" &&
-														declarator.init.object &&
-														declarator.init.object.type === "Identifier" &&
-														declarator.init.object.name === prop.identifier.name
-												)
-											) {
-												return Object.assign(declarator, {
-													init: {
-														...declarator.init,
-														object: this.mirroredSelfProperties.find(
-															(prop) =>
-																declarator.init &&
-																declarator.init.type === "MemberExpression" &&
-																declarator.init.object &&
-																declarator.init.object.type === "Identifier" &&
-																declarator.init.object.name ===
-																	prop.identifier.name
-														)!.memberExpression,
-													},
-												});
-											}
+    const walkBase = {
+      ...walk.base,
+      JSXElement(node: Node, state: any, callback: any) {},
+    };
 
-											return declarator;
-										})
-										.filter((declaration) => declaration);
+    switch (classType) {
+      case ClassType.Class: {
+        const name = (node.id as any as Identifier).name;
 
-									return declarations.length >= 1
-										? Object.assign(expression, {
-												declarations,
-										  })
-										: {
-												type: "EmptyStatement",
-										  };
-								}
-								case "ExpressionStatement": {
-									if (
-										expression.expression.type === "AssignmentExpression" &&
-										expression.expression.left.type === "MemberExpression" &&
-										expression.expression.left.object.type === "Identifier" &&
-										(this.mirroredProperties.find(
-											(prop) =>
-												expression.expression.type === "AssignmentExpression" &&
-												expression.expression.left.type ===
-													"MemberExpression" &&
-												expression.expression.left.object.type ===
-													"Identifier" &&
-												expression.expression.left.object.name === prop.name
-										) ||
-											(node.id.type === "Identifier" &&
-												expression.expression.left.object.name ===
-													node.id.name)) &&
-										expression.expression.right.type === "FunctionExpression"
-									) {
-										return Object.assign(expression, {
-											type: "MethodDefinition",
-											key: expression.expression.left.property,
-											static: false,
-											kind: "method",
-											value: {
-												...expression.expression.right,
-												id: null,
-											},
-										});
-									}
+        const rawFunction = (node.init as any as CallExpression)
+          .callee as any as FunctionExpression;
 
-									if (
-										expression.expression.type === "AssignmentExpression" &&
-										expression.expression.left.type === "MemberExpression" &&
-										expression.expression.left.object.type === "Identifier" &&
-										(this.mirroredProperties.find(
-											(prop) =>
-												expression.expression.type === "AssignmentExpression" &&
-												expression.expression.left.type ===
-													"MemberExpression" &&
-												expression.expression.left.object.type ===
-													"Identifier" &&
-												expression.expression.left.object.name === prop.name
-										) ||
-											(node.id.type === "Identifier" &&
-												expression.expression.left.object.name ===
-													node.id.name)) &&
-										expression.expression.right.type === "CallExpression"
-									) {
-										return Object.assign(expression, {
-											type: "MethodDefinition",
-											key: expression.expression.left.property,
-											static: false,
-											kind: "method",
-											value: {
-												type: "FunctionExpression",
-												id: null,
-												expression: false,
-												generator: false,
-												async: false,
-												params: [],
-												body: {
-													type: "BlockStatement",
-													body: [
-														{
-															type: "ExpressionStatement",
-															expression: {
-																...expression.expression.right,
-																callee: {
-																	...expression.expression.right.callee,
-																	type: "ArrowFunctionExpression",
-																},
-															},
-														},
-													],
-												},
-											},
-										});
-									}
+        const functionBody = (
+          (node.init as any as CallExpression)
+            .callee as any as FunctionExpression
+        ).body.body;
 
-									if (
-										expression.expression.type === "CallExpression" &&
-										expression.expression.arguments[0] &&
-										expression.expression.arguments[0].type === "Identifier" &&
-										node.id.type === "Identifier" &&
-										expression.expression.arguments[0].name === node.id.name &&
-										expression.expression.arguments[1] &&
-										expression.expression.arguments[1].type ===
-											"ArrayExpression" &&
-										expression.expression.arguments[1].elements.every(
-											(element) =>
-												element &&
-												element.type === "ObjectExpression" &&
-												element.properties.every(
-													(property) =>
-														(property &&
-															property.type === "Property" &&
-															property.key.type === "Identifier" &&
-															property.key.name === "key") ||
-														"get"
-												)
-										)
-									) {
-										(
-											expression.expression.arguments[1]
-												.elements as ObjectExpression[]
-										).forEach((element) => {
-											this.getters.push({
-												type: "MethodDefinition",
-												static: false,
-												computed: false,
-												key: (element.properties[0] as Property).key,
-												kind: "get",
-												value: (element.properties[1] as Property)
-													.value as FunctionExpression,
-											});
-										});
+        const protoIdentifier = (
+          this.candidateMap.get(name)!.proto.declarations[0]
+            .id as any as Identifier
+        ).name;
 
-										return Object.assign(expression, {
-											type: "EmptyStatement",
-										});
-									}
+        const classConstructor = this.candidateMap.get(name)!.constructor;
 
-									return expression;
-								}
-								case "ReturnStatement": {
-									if (
-										node.id.type === "Identifier" &&
-										expression.argument &&
-										expression.argument.type === "Identifier" &&
-										expression.argument.name === node.id.name
-									) {
-										return Object.assign(expression, {
-											type: "EmptyStatement",
-										});
-									}
+        const superClass =
+          functionBody[0].type === "ExpressionStatement" &&
+          functionBody[0].expression.type === "CallExpression" &&
+          functionBody[0].expression.arguments.length === 2 &&
+          functionBody[0].expression.arguments[0] &&
+          functionBody[0].expression.arguments[0].type === "Identifier" &&
+          functionBody[0].expression.arguments[0].name === name
+            ? (node.init as CallExpression).arguments[0]
+            : null;
 
-									return expression;
-								}
-								default: {
-									return expression;
-								}
-							}
-						}) as unknown as MethodDefinition[]),
-						...this.getters,
-					],
-				},
-			};
-		}
+        const fixConstructorReferences = (
+          functionExpression: FunctionExpression
+        ) => {
+          // @ts-ignore
+          walk.ancestor(
+            // @ts-ignore
+            functionExpression as any,
+            {
+              // @ts-ignore
+              MemberExpression(node: MemberExpression, ancestors: Node[]) {
+                if (
+                  node.object &&
+                  node.property &&
+                  node.property.type === "Identifier" &&
+                  node.property.name === "constructor"
+                ) {
+                  Object.assign(node, node.object);
+                }
 
-		return parent as unknown as ClassDeclaration;
-	}
+                if (
+                  node.object &&
+                  node.object.type === "Identifier" &&
+                  node.object.name === name
+                ) {
+                  Object.assign(node, { object: { type: "ThisExpression" } });
+                }
+
+                if (
+                  superClass &&
+                  node.object &&
+                  recast.print(node.object).code ===
+                    recast.print(superClass).code
+                ) {
+                  Object.assign(node, { object: { type: "Super" } });
+                }
+              },
+            },
+            walkBase
+          );
+
+          return functionExpression;
+        };
+
+        const parseFunctionBody = (functionExpression: FunctionExpression) => {
+          const functionBody = functionExpression.body.body;
+
+          let thisProps: string;
+          let thisConstructor: string;
+          let thisMirror: string;
+
+          for (const node of functionBody) {
+            switch (node.type) {
+              case "VariableDeclaration": {
+                for (const declarator of node.declarations) {
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "MemberExpression" &&
+                    declarator.init.object &&
+                    declarator.init.object.type === "ThisExpression" &&
+                    declarator.init.property &&
+                    declarator.init.property.type === "Identifier" &&
+                    declarator.init.property.name === "props"
+                  ) {
+                    thisProps = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "MemberExpression" &&
+                    declarator.init.object &&
+                    declarator.init.object.type === "ThisExpression" &&
+                    declarator.init.property &&
+                    declarator.init.property.type === "Identifier" &&
+                    declarator.init.property.name === "constructor"
+                  ) {
+                    thisConstructor = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "ThisExpression"
+                  ) {
+                    thisMirror = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+                }
+
+                node.declarations = node.declarations.filter(
+                  (declarator) => declarator !== null
+                ); // having null in the declarations array fucks up recast, don't do that :3
+
+                // @ts-ignore
+                walk.ancestor(
+                  // @ts-ignore
+                  {
+                    ...functionExpression,
+                    body: {
+                      ...functionExpression.body,
+                      body: functionBody.filter((statement) => statement),
+                    },
+                  } as any,
+                  {
+                    // @ts-ignore
+                    MemberExpression(
+                      node: MemberExpression,
+                      ancestors: Node[]
+                    ) {
+                      if (
+                        thisProps &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisProps
+                      ) {
+                        Object.assign(node, {
+                          object: {
+                            type: "MemberExpression",
+                            object: { type: "ThisExpression" },
+                            property: {
+                              type: "Identifier",
+                              name: "props",
+                            },
+                          },
+                        });
+                      }
+
+                      if (
+                        thisConstructor &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisConstructor
+                      ) {
+                        Object.assign(node, {
+                          object: { type: "ThisExpression" },
+                        });
+                      }
+
+                      if (
+                        thisMirror &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisMirror
+                      ) {
+                        Object.assign(node, {
+                          object: { type: "ThisExpression" },
+                        });
+                      }
+
+                      if (
+                        node.object &&
+                        node.object.type === "ThisExpression" &&
+                        node.property &&
+                        node.property.type === "Identifier" &&
+                        node.property.name === "constructor"
+                      ) {
+                        Object.assign(node, {
+                          type: "ThisExpression",
+                        });
+                      }
+                    },
+
+                    // @ts-ignore
+                    Identifier(node: Identifier, ancestors: Node[]) {
+                      if (
+                        superClass &&
+                        rawFunction.params[0] &&
+                        rawFunction.params[0].type === "Identifier" &&
+                        node.name === rawFunction.params[0].name
+                      ) {
+                        Object.assign(node, superClass);
+                      }
+                    },
+                  },
+                  walkBase
+                );
+
+                // @ts-ignore
+                walk.ancestor(
+                  // @ts-ignore
+                  {
+                    ...functionExpression,
+                    body: {
+                      ...functionExpression.body,
+                      body: functionBody.filter((statement) => statement),
+                    },
+                  } as any,
+                  {
+                    // @ts-ignore
+                    MemberExpression(
+                      node: MemberExpression,
+                      ancestors: Node[]
+                    ) {
+                      if (
+                        node.object &&
+                        node.object.type === "ThisExpression" &&
+                        node.property &&
+                        node.property.type === "Identifier" &&
+                        node.property.name === "constructor"
+                      ) {
+                        Object.assign(node, {
+                          type: "ThisExpression",
+                        });
+                      }
+                    },
+                  },
+                  walkBase
+                );
+
+                break;
+              }
+            }
+          }
+          return functionBody.filter((statement) => statement !== null);
+        };
+
+        const parseConstructor = (functionExpression: FunctionExpression) => {
+          const functionBody = functionExpression.body.body;
+          let functionBodyClone: Statement[] = functionBody;
+
+          let isSpread: boolean = false;
+
+          const lastNode =
+            functionExpression.body.body[
+              functionExpression.body.body.length - 1
+            ];
+
+          if (
+            superClass &&
+            functionBody[0].type === "VariableDeclaration" &&
+            functionBody[0].declarations[0] &&
+            functionBody[0].declarations[0].id.type === "Identifier" &&
+            functionBody[1].type === "ForStatement" &&
+            functionBody[2].type === "ExpressionStatement" &&
+            functionBody[2].expression.type === "AssignmentExpression" &&
+            functionBody[2].expression.right.type === "LogicalExpression" &&
+            functionBody[2].expression.right.left.type === "CallExpression" &&
+            functionBody[2].expression.right.operator === "||" &&
+            functionBody[2].expression.right.right.type === "ThisExpression" &&
+            lastNode.type === "ReturnStatement" &&
+            lastNode.argument &&
+            lastNode.argument.type === "Identifier" &&
+            lastNode.argument.name ===
+              functionBody[0].declarations[0].id.name &&
+            functionExpression.params.length === 0
+          ) {
+            // args are spread :husk:
+            isSpread = true;
+
+            const _this = functionBody[0].declarations[0].id.name;
+
+            functionBodyClone = functionBody.slice(3);
+            functionBodyClone.pop();
+
+            functionBodyClone = [
+              {
+                type: "ExpressionStatement",
+                expression: {
+                  type: "CallExpression",
+                  callee: { type: "Super" },
+                  arguments: [
+                    {
+                      type: "SpreadElement",
+                      argument: { type: "Identifier", name: "args" },
+                    },
+                  ],
+                  optional: false,
+                },
+              },
+              ...functionBodyClone,
+            ];
+
+            // @ts-ignore
+            walk.ancestor(
+              // @ts-ignore
+              {
+                ...functionExpression,
+                body: {
+                  ...functionExpression.body,
+                  body: functionBodyClone,
+                },
+              } as any,
+              {
+                // @ts-ignore
+                Identifier(node: Identifier, ancestors: Node[]) {
+                  if (node.name === _this) {
+                    Object.assign(node, { type: "ThisExpression" });
+                  }
+                },
+              },
+              walkBase
+            );
+          }
+
+          if (
+            superClass &&
+            functionBody[0].type === "VariableDeclaration" &&
+            functionBody[0].declarations[0] &&
+            functionBody[0].declarations[0].id.type === "Identifier" &&
+            functionBody[1].type === "ExpressionStatement" &&
+            functionBody[1].expression.type === "AssignmentExpression" &&
+            functionBody[1].expression.right.type === "LogicalExpression" &&
+            functionBody[1].expression.right.left.type === "CallExpression" &&
+            functionBody[1].expression.right.left.callee.type ===
+              "MemberExpression" &&
+            recast.print(functionBody[1].expression.right.left.callee.object)
+              .code === recast.print(superClass).code &&
+            functionBody[1].expression.right.operator === "||" &&
+            functionBody[1].expression.right.right.type === "ThisExpression" &&
+            lastNode.type === "ReturnStatement" &&
+            lastNode.argument &&
+            lastNode.argument.type === "Identifier" &&
+            lastNode.argument.name === functionBody[0].declarations[0].id.name
+          ) {
+            const _this = functionBody[0].declarations[0].id.name;
+            const _super = functionBody[1].expression.right.left;
+
+            const superArgs = _super.arguments;
+            superArgs.shift();
+
+            functionBodyClone = functionBody.slice(2);
+            functionBodyClone.pop();
+
+            functionBodyClone = [
+              {
+                type: "ExpressionStatement",
+                expression: {
+                  type: "CallExpression",
+                  callee: { type: "Super" },
+                  arguments: superArgs,
+                  optional: false,
+                },
+              },
+              ...functionBodyClone,
+            ];
+
+            // @ts-ignore
+            walk.ancestor(
+              // @ts-ignore
+              {
+                ...functionExpression,
+                body: {
+                  ...functionExpression.body,
+                  body: functionBodyClone,
+                },
+              } as any,
+              {
+                // @ts-ignore
+                Identifier(node: Identifier, ancestors: Node[]) {
+                  if (node.name === _this) {
+                    Object.assign(node, { type: "ThisExpression" });
+                  }
+                },
+              },
+              walkBase
+            );
+          }
+
+          // @ts-ignore
+          walk.ancestor(
+            // @ts-ignore
+            {
+              ...functionExpression,
+              body: {
+                ...functionExpression.body,
+                body: functionBodyClone,
+              },
+            } as any,
+            {
+              // @ts-ignore
+              FunctionExpression(node: FunctionExpression, ancestors: Node[]) {
+                Object.assign(node, {
+                  ...node,
+                  body: {
+                    ...node.body,
+                    body: parseFunctionBody(node),
+                  },
+                } as any);
+              },
+            },
+            walkBase
+          );
+
+          return {
+            ...functionExpression,
+            params: isSpread
+              ? [
+                  {
+                    type: "RestElement",
+                    argument: { type: "Identifier", name: "args" },
+                  },
+                ]
+              : functionExpression.params,
+            body: {
+              ...functionExpression.body,
+              body: functionBodyClone,
+            },
+          };
+        };
+
+        return {
+          ...parent,
+          type: "ClassDeclaration",
+          id: {
+            type: "Identifier",
+            name,
+          },
+          superClass,
+          body: {
+            type: "ClassBody",
+            body: [
+              classConstructor.body.body[0] &&
+                classConstructor.body.body[0].type !== "ReturnStatement" && {
+                  type: "MethodDefinition",
+                  static: false,
+                  computed: false,
+                  key: {
+                    type: "Identifier",
+                    name: "constructor",
+                  },
+                  kind: "method",
+                  value: fixConstructorReferences(
+                    parseConstructor({
+                      ...classConstructor,
+                      type: "FunctionExpression",
+                      id: null,
+                      body: {
+                        ...classConstructor.body,
+                        body: parseFunctionBody(
+                          classConstructor as any as FunctionExpression
+                        ),
+                      },
+                    }) as any
+                  ),
+                },
+              ...functionBody.map((statement) => {
+                switch (statement.type) {
+                  case "ExpressionStatement": {
+                    if (
+                      statement.expression.type === "AssignmentExpression" &&
+                      statement.expression.left &&
+                      statement.expression.left.type === "MemberExpression" &&
+                      statement.expression.left.object &&
+                      statement.expression.left.object.type === "Identifier" &&
+                      (statement.expression.left.object.name ===
+                        protoIdentifier ||
+                        (classConstructor.id &&
+                          statement.expression.left.object.name ===
+                            classConstructor.id.name)) &&
+                      statement.expression.left.property &&
+                      statement.expression.left.property.type ===
+                        "Identifier" &&
+                      statement.expression.right &&
+                      statement.expression.right.type === "FunctionExpression"
+                    ) {
+                      const functionName =
+                        statement.expression.left.property.name;
+                      const functionExpression = statement.expression.right;
+
+                      return {
+                        type: "MethodDefinition",
+                        static:
+                          classConstructor.id &&
+                          statement.expression.left.object.name ===
+                            classConstructor.id.name
+                            ? true
+                            : false,
+                        computed: false,
+                        key: {
+                          type: "Identifier",
+                          name: functionName,
+                        },
+                        kind: "method",
+                        value: fixConstructorReferences({
+                          ...functionExpression,
+                          id: null,
+                          body: {
+                            ...functionExpression.body,
+                            body: parseFunctionBody(functionExpression),
+                          },
+                        }),
+                      } as any as MethodDefinition;
+                    }
+                  }
+                }
+              }),
+            ].filter((statement) => statement),
+          },
+        } as any as ClassDeclaration;
+      }
+
+      case ClassType.ParenthesizedClass: {
+        const name = (node.id as any as Identifier).name;
+
+        const rawFunction = (
+          (node.init as any as CallExpression)
+            .callee as any as ParenthesizedExpression
+        ).expression as any as FunctionExpression;
+
+        const functionBody = (
+          (
+            (node.init as any as CallExpression)
+              .callee as any as ParenthesizedExpression
+          ).expression as any as FunctionExpression
+        ).body.body;
+
+        const protoIdentifier = (
+          (functionBody[2] as any as VariableDeclaration).declarations[0]
+            .id as any as Identifier
+        ).name;
+
+        const classConstructor = functionBody[1] as any as FunctionDeclaration;
+
+        const superClass =
+          functionBody[0].type === "ExpressionStatement" &&
+          functionBody[0].expression.type === "CallExpression" &&
+          functionBody[0].expression.arguments.length === 2 &&
+          functionBody[0].expression.arguments[0] &&
+          functionBody[0].expression.arguments[0].type === "Identifier" &&
+          functionBody[0].expression.arguments[0].name === name
+            ? (node.init as CallExpression).arguments[0]
+            : null;
+
+        const fixConstructorReferences = (
+          functionExpression: FunctionExpression
+        ) => {
+          // @ts-ignore
+          walk.ancestor(
+            // @ts-ignore
+            functionExpression as any,
+            {
+              // @ts-ignore
+              MemberExpression(node: MemberExpression, ancestors: Node[]) {
+                if (
+                  node.object &&
+                  node.property &&
+                  node.property.type === "Identifier" &&
+                  node.property.name === "constructor"
+                ) {
+                  Object.assign(node, node.object);
+                }
+
+                if (
+                  node.object &&
+                  node.object.type === "Identifier" &&
+                  node.object.name === name
+                ) {
+                  Object.assign(node, { object: { type: "ThisExpression" } });
+                }
+
+                if (
+                  superClass &&
+                  rawFunction.params[0] &&
+                  rawFunction.params[0].type === "Identifier" &&
+                  node.object &&
+                  node.object.type === "Identifier" &&
+                  node.object.name === rawFunction.params[0].name
+                ) {
+                  Object.assign(node, { object: { type: "Super" } });
+                }
+              },
+            },
+            walkBase
+          );
+
+          return functionExpression;
+        };
+
+        const parseFunctionBody = (functionExpression: FunctionExpression) => {
+          const functionBody = functionExpression.body.body;
+
+          let thisProps: string;
+          let thisConstructor: string;
+          let thisMirror: string;
+
+          for (const node of functionBody) {
+            switch (node.type) {
+              case "VariableDeclaration": {
+                for (const declarator of node.declarations) {
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "MemberExpression" &&
+                    declarator.init.object &&
+                    declarator.init.object.type === "ThisExpression" &&
+                    declarator.init.property &&
+                    declarator.init.property.type === "Identifier" &&
+                    declarator.init.property.name === "props"
+                  ) {
+                    thisProps = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "MemberExpression" &&
+                    declarator.init.object &&
+                    declarator.init.object.type === "ThisExpression" &&
+                    declarator.init.property &&
+                    declarator.init.property.type === "Identifier" &&
+                    declarator.init.property.name === "constructor"
+                  ) {
+                    thisConstructor = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "ThisExpression"
+                  ) {
+                    thisMirror = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+                }
+
+                node.declarations = node.declarations.filter(
+                  (declarator) => declarator !== null
+                ); // having null in the declarations array fucks up recast, don't do that :3
+
+                // @ts-ignore
+                walk.ancestor(
+                  // @ts-ignore
+                  {
+                    ...functionExpression,
+                    body: {
+                      ...functionExpression.body,
+                      body: functionBody.filter((statement) => statement),
+                    },
+                  } as any,
+                  {
+                    // @ts-ignore
+                    MemberExpression(
+                      node: MemberExpression,
+                      ancestors: Node[]
+                    ) {
+                      if (
+                        thisProps &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisProps
+                      ) {
+                        Object.assign(node, {
+                          object: {
+                            type: "MemberExpression",
+                            object: { type: "ThisExpression" },
+                            property: {
+                              type: "Identifier",
+                              name: "props",
+                            },
+                          },
+                        });
+                      }
+
+                      if (
+                        thisConstructor &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisConstructor
+                      ) {
+                        Object.assign(node, {
+                          object: { type: "ThisExpression" },
+                        });
+                      }
+
+                      if (
+                        thisMirror &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisMirror
+                      ) {
+                        Object.assign(node, {
+                          object: { type: "ThisExpression" },
+                        });
+                      }
+
+                      if (
+                        node.object &&
+                        node.object.type === "ThisExpression" &&
+                        node.property &&
+                        node.property.type === "Identifier" &&
+                        node.property.name === "constructor"
+                      ) {
+                        Object.assign(node, {
+                          type: "ThisExpression",
+                        });
+                      }
+                    },
+
+                    // @ts-ignore
+                    Identifier(node: Identifier, ancestors: Node[]) {
+                      if (
+                        superClass &&
+                        rawFunction.params[0] &&
+                        rawFunction.params[0].type === "Identifier" &&
+                        node.name === rawFunction.params[0].name
+                      ) {
+                        Object.assign(node, superClass);
+                      }
+                    },
+                  },
+                  walkBase
+                );
+
+                // @ts-ignore
+                walk.ancestor(
+                  // @ts-ignore
+                  {
+                    ...functionExpression,
+                    body: {
+                      ...functionExpression.body,
+                      body: functionBody.filter((statement) => statement),
+                    },
+                  } as any,
+                  {
+                    // @ts-ignore
+                    MemberExpression(
+                      node: MemberExpression,
+                      ancestors: Node[]
+                    ) {
+                      if (
+                        node.object &&
+                        node.object.type === "ThisExpression" &&
+                        node.property &&
+                        node.property.type === "Identifier" &&
+                        node.property.name === "constructor"
+                      ) {
+                        Object.assign(node, {
+                          type: "ThisExpression",
+                        });
+                      }
+                    },
+                  },
+                  walkBase
+                );
+
+                break;
+              }
+            }
+          }
+          return functionBody.filter((statement) => statement !== null);
+        };
+
+        const parseConstructor = (functionExpression: FunctionExpression) => {
+          const functionBody = functionExpression.body.body;
+          let functionBodyClone: Statement[] = functionBody;
+
+          let isSpread: boolean = false;
+
+          const lastNode =
+            functionExpression.body.body[
+              functionExpression.body.body.length - 1
+            ];
+
+          if (
+            superClass &&
+            functionBody[0].type === "VariableDeclaration" &&
+            functionBody[0].declarations[0] &&
+            functionBody[0].declarations[0].id.type === "Identifier" &&
+            functionBody[1].type === "ForStatement" &&
+            functionBody[2].type === "ExpressionStatement" &&
+            functionBody[2].expression.type === "AssignmentExpression" &&
+            functionBody[2].expression.right.type === "LogicalExpression" &&
+            functionBody[2].expression.right.left.type === "CallExpression" &&
+            functionBody[2].expression.right.operator === "||" &&
+            functionBody[2].expression.right.right.type === "ThisExpression" &&
+            lastNode.type === "ReturnStatement" &&
+            lastNode.argument &&
+            lastNode.argument.type === "Identifier" &&
+            lastNode.argument.name ===
+              functionBody[0].declarations[0].id.name &&
+            functionExpression.params.length === 0
+          ) {
+            // args are spread :husk:
+            isSpread = true;
+
+            const _this = functionBody[0].declarations[0].id.name;
+
+            functionBodyClone = functionBody.slice(3);
+            functionBodyClone.pop();
+
+            functionBodyClone = [
+              {
+                type: "ExpressionStatement",
+                expression: {
+                  type: "CallExpression",
+                  callee: { type: "Super" },
+                  arguments: [
+                    {
+                      type: "SpreadElement",
+                      argument: { type: "Identifier", name: "args" },
+                    },
+                  ],
+                  optional: false,
+                },
+              },
+              ...functionBodyClone,
+            ];
+
+            // @ts-ignore
+            walk.ancestor(
+              // @ts-ignore
+              {
+                ...functionExpression,
+                body: {
+                  ...functionExpression.body,
+                  body: functionBodyClone,
+                },
+              } as any,
+              {
+                // @ts-ignore
+                Identifier(node: Identifier, ancestors: Node[]) {
+                  if (node.name === _this) {
+                    Object.assign(node, { type: "ThisExpression" });
+                  }
+                },
+              },
+              walkBase
+            );
+          }
+
+          if (
+            superClass &&
+            functionBody[0].type === "VariableDeclaration" &&
+            functionBody[0].declarations[0] &&
+            functionBody[0].declarations[0].id.type === "Identifier" &&
+            functionBody[1].type === "ExpressionStatement" &&
+            functionBody[1].expression.type === "AssignmentExpression" &&
+            functionBody[1].expression.right.type === "LogicalExpression" &&
+            functionBody[1].expression.right.left.type === "CallExpression" &&
+            functionBody[1].expression.right.left.callee.type ===
+              "MemberExpression" &&
+            recast.print(functionBody[1].expression.right.left.callee.object)
+              .code === recast.print(superClass).code &&
+            functionBody[1].expression.right.operator === "||" &&
+            functionBody[1].expression.right.right.type === "ThisExpression" &&
+            lastNode.type === "ReturnStatement" &&
+            lastNode.argument &&
+            lastNode.argument.type === "Identifier" &&
+            lastNode.argument.name === functionBody[0].declarations[0].id.name
+          ) {
+            const _this = functionBody[0].declarations[0].id.name;
+            const _super = functionBody[1].expression.right.left;
+
+            const superArgs = _super.arguments;
+            superArgs.shift();
+
+            functionBodyClone = functionBody.slice(2);
+            functionBodyClone.pop();
+
+            functionBodyClone = [
+              {
+                type: "ExpressionStatement",
+                expression: {
+                  type: "CallExpression",
+                  callee: { type: "Super" },
+                  arguments: superArgs,
+                  optional: false,
+                },
+              },
+              ...functionBodyClone,
+            ];
+
+            // @ts-ignore
+            walk.ancestor(
+              // @ts-ignore
+              {
+                ...functionExpression,
+                body: {
+                  ...functionExpression.body,
+                  body: functionBodyClone,
+                },
+              } as any,
+              {
+                // @ts-ignore
+                Identifier(node: Identifier, ancestors: Node[]) {
+                  if (node.name === _this) {
+                    Object.assign(node, { type: "ThisExpression" });
+                  }
+                },
+              },
+              walkBase
+            );
+          }
+
+          // @ts-ignore
+          walk.ancestor(
+            // @ts-ignore
+            {
+              ...functionExpression,
+              body: {
+                ...functionExpression.body,
+                body: functionBodyClone,
+              },
+            } as any,
+            {
+              // @ts-ignore
+              FunctionExpression(node: FunctionExpression, ancestors: Node[]) {
+                Object.assign(node, {
+                  ...node,
+                  body: {
+                    ...node.body,
+                    body: parseFunctionBody(node),
+                  },
+                } as any);
+              },
+            },
+            walkBase
+          );
+
+          return {
+            ...functionExpression,
+            params: isSpread
+              ? [
+                  {
+                    type: "RestElement",
+                    argument: { type: "Identifier", name: "args" },
+                  },
+                ]
+              : functionExpression.params,
+            body: {
+              ...functionExpression.body,
+              body: functionBodyClone,
+            },
+          };
+        };
+
+        return {
+          ...parent,
+          type: "ClassDeclaration",
+          id: {
+            type: "Identifier",
+            name,
+          },
+          superClass,
+          body: {
+            type: "ClassBody",
+            body: [
+              classConstructor.body.body[0] &&
+                classConstructor.body.body[0].type !== "ReturnStatement" && {
+                  type: "MethodDefinition",
+                  static: false,
+                  computed: false,
+                  key: {
+                    type: "Identifier",
+                    name: "constructor",
+                  },
+                  kind: "method",
+                  value: fixConstructorReferences(
+                    parseConstructor({
+                      ...classConstructor,
+                      type: "FunctionExpression",
+                      id: null,
+                      body: {
+                        ...classConstructor.body,
+                        body: parseFunctionBody(
+                          classConstructor as any as FunctionExpression
+                        ),
+                      },
+                    }) as any
+                  ),
+                },
+              ...functionBody.map((statement) => {
+                switch (statement.type) {
+                  case "ExpressionStatement": {
+                    if (
+                      statement.expression.type === "AssignmentExpression" &&
+                      statement.expression.left &&
+                      statement.expression.left.type === "MemberExpression" &&
+                      statement.expression.left.object &&
+                      statement.expression.left.object.type === "Identifier" &&
+                      (statement.expression.left.object.name ===
+                        protoIdentifier ||
+                        (classConstructor.id &&
+                          statement.expression.left.object.name ===
+                            classConstructor.id.name)) &&
+                      statement.expression.left.property &&
+                      statement.expression.left.property.type ===
+                        "Identifier" &&
+                      statement.expression.right &&
+                      statement.expression.right.type === "FunctionExpression"
+                    ) {
+                      const functionName =
+                        statement.expression.left.property.name;
+                      const functionExpression = statement.expression.right;
+
+                      return {
+                        type: "MethodDefinition",
+                        static:
+                          classConstructor.id &&
+                          statement.expression.left.object.name ===
+                            classConstructor.id.name
+                            ? true
+                            : false,
+                        computed: false,
+                        key: {
+                          type: "Identifier",
+                          name: functionName,
+                        },
+                        kind: "method",
+                        value: fixConstructorReferences({
+                          ...functionExpression,
+                          id: null,
+                          body: {
+                            ...functionExpression.body,
+                            body: parseFunctionBody(functionExpression),
+                          },
+                        }),
+                      } as any as MethodDefinition;
+                    }
+                  }
+                }
+              }),
+            ].filter((statement) => statement),
+          },
+        } as any as ClassDeclaration;
+      }
+
+      case ClassType.NewClass: {
+        const name = (node.id as any as Identifier).name;
+
+        const rawFunction = (
+          (
+            (node.init as any as NewExpression)
+              .callee as any as ParenthesizedExpression
+          ).expression as any as CallExpression
+        ).callee as any as FunctionExpression;
+
+        const functionBody = (
+          (
+            (
+              (node.init as any as NewExpression)
+                .callee as any as ParenthesizedExpression
+            ).expression as any as CallExpression
+          ).callee as any as FunctionExpression
+        ).body.body;
+
+        const protoIdentifier = (
+          (functionBody[2] as any as VariableDeclaration).declarations[0]
+            .id as any as Identifier
+        ).name;
+
+        const classConstructor = functionBody[1] as any as FunctionDeclaration;
+
+        const superClass =
+          classConstructor.id &&
+          functionBody[0].type === "ExpressionStatement" &&
+          functionBody[0].expression.type === "CallExpression" &&
+          functionBody[0].expression.arguments.length === 2 &&
+          functionBody[0].expression.arguments[0] &&
+          recast.print(functionBody[0].expression.arguments[0]).code ===
+            recast.print(classConstructor.id).code
+            ? (
+                (
+                  (node.init as any as NewExpression)
+                    .callee as any as ParenthesizedExpression
+                ).expression as any as CallExpression
+              ).arguments[0]
+            : null;
+
+        const fixConstructorReferences = (
+          functionExpression: FunctionExpression
+        ) => {
+          // @ts-ignore
+          walk.ancestor(
+            // @ts-ignore
+            functionExpression as any,
+            {
+              // @ts-ignore
+              MemberExpression(node: MemberExpression, ancestors: Node[]) {
+                if (
+                  node.object &&
+                  node.property &&
+                  node.property.type === "Identifier" &&
+                  node.property.name === "constructor"
+                ) {
+                  Object.assign(node, node.object);
+                }
+
+                if (
+                  node.object &&
+                  node.object.type === "Identifier" &&
+                  node.object.name === name
+                ) {
+                  Object.assign(node, { object: { type: "ThisExpression" } });
+                }
+
+                if (
+                  superClass &&
+                  rawFunction.params[0] &&
+                  rawFunction.params[0].type === "Identifier" &&
+                  node.object &&
+                  node.object.type === "Identifier" &&
+                  node.object.name === rawFunction.params[0].name
+                ) {
+                  Object.assign(node, { object: { type: "Super" } });
+                }
+              },
+            },
+            walkBase
+          );
+
+          return functionExpression;
+        };
+
+        const parseFunctionBody = (functionExpression: FunctionExpression) => {
+          const functionBody = functionExpression.body.body;
+
+          let thisProps: string;
+          let thisConstructor: string;
+          let thisMirror: string;
+
+          for (const node of functionBody) {
+            switch (node.type) {
+              case "VariableDeclaration": {
+                for (const declarator of node.declarations) {
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "MemberExpression" &&
+                    declarator.init.object &&
+                    declarator.init.object.type === "ThisExpression" &&
+                    declarator.init.property &&
+                    declarator.init.property.type === "Identifier" &&
+                    declarator.init.property.name === "props"
+                  ) {
+                    thisProps = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "MemberExpression" &&
+                    declarator.init.object &&
+                    declarator.init.object.type === "ThisExpression" &&
+                    declarator.init.property &&
+                    declarator.init.property.type === "Identifier" &&
+                    declarator.init.property.name === "constructor"
+                  ) {
+                    thisConstructor = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+
+                  if (
+                    declarator.id &&
+                    declarator.id.type === "Identifier" &&
+                    declarator.init &&
+                    declarator.init.type === "ThisExpression"
+                  ) {
+                    thisMirror = declarator.id.name;
+
+                    if (node.declarations.length > 1) {
+                      delete node.declarations[
+                        node.declarations.indexOf(declarator)
+                      ];
+                    } else {
+                      delete functionBody[functionBody.indexOf(node)];
+                    }
+                  }
+                }
+
+                node.declarations = node.declarations.filter(
+                  (declarator) => declarator !== null
+                ); // having null in the declarations array fucks up recast, don't do that :3
+
+                // @ts-ignore
+                walk.ancestor(
+                  // @ts-ignore
+                  {
+                    ...functionExpression,
+                    body: {
+                      ...functionExpression.body,
+                      body: functionBody.filter((statement) => statement),
+                    },
+                  } as any,
+                  {
+                    // @ts-ignore
+                    MemberExpression(
+                      node: MemberExpression,
+                      ancestors: Node[]
+                    ) {
+                      if (
+                        thisProps &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisProps
+                      ) {
+                        Object.assign(node, {
+                          object: {
+                            type: "MemberExpression",
+                            object: { type: "ThisExpression" },
+                            property: {
+                              type: "Identifier",
+                              name: "props",
+                            },
+                          },
+                        });
+                      }
+
+                      if (
+                        thisConstructor &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisConstructor
+                      ) {
+                        Object.assign(node, {
+                          object: { type: "ThisExpression" },
+                        });
+                      }
+
+                      if (
+                        thisMirror &&
+                        node.object &&
+                        node.object.type === "Identifier" &&
+                        node.object.name === thisMirror
+                      ) {
+                        Object.assign(node, {
+                          object: { type: "ThisExpression" },
+                        });
+                      }
+
+                      if (
+                        node.object &&
+                        node.object.type === "ThisExpression" &&
+                        node.property &&
+                        node.property.type === "Identifier" &&
+                        node.property.name === "constructor"
+                      ) {
+                        Object.assign(node, {
+                          type: "ThisExpression",
+                        });
+                      }
+                    },
+
+                    // @ts-ignore
+                    Identifier(node: Identifier, ancestors: Node[]) {
+                      if (
+                        superClass &&
+                        rawFunction.params[0] &&
+                        rawFunction.params[0].type === "Identifier" &&
+                        node.name === rawFunction.params[0].name
+                      ) {
+                        Object.assign(node, superClass);
+                      }
+                    },
+                  },
+                  walkBase
+                );
+
+                // @ts-ignore
+                walk.ancestor(
+                  // @ts-ignore
+                  {
+                    ...functionExpression,
+                    body: {
+                      ...functionExpression.body,
+                      body: functionBody.filter((statement) => statement),
+                    },
+                  } as any,
+                  {
+                    // @ts-ignore
+                    MemberExpression(
+                      node: MemberExpression,
+                      ancestors: Node[]
+                    ) {
+                      if (
+                        node.object &&
+                        node.object.type === "ThisExpression" &&
+                        node.property &&
+                        node.property.type === "Identifier" &&
+                        node.property.name === "constructor"
+                      ) {
+                        Object.assign(node, {
+                          type: "ThisExpression",
+                        });
+                      }
+                    },
+                  },
+                  walkBase
+                );
+
+                break;
+              }
+            }
+          }
+          return functionBody.filter((statement) => statement !== null);
+        };
+
+        const parseConstructor = (functionExpression: FunctionExpression) => {
+          const functionBody = functionExpression.body.body;
+          let functionBodyClone: Statement[] = functionBody;
+
+          let isSpread: boolean = false;
+
+          const lastNode =
+            functionExpression.body.body[
+              functionExpression.body.body.length - 1
+            ];
+
+          if (
+            superClass &&
+            functionBody[0].type === "VariableDeclaration" &&
+            functionBody[0].declarations[0] &&
+            functionBody[0].declarations[0].id.type === "Identifier" &&
+            functionBody[1].type === "ForStatement" &&
+            functionBody[2].type === "ExpressionStatement" &&
+            functionBody[2].expression.type === "AssignmentExpression" &&
+            functionBody[2].expression.right.type === "LogicalExpression" &&
+            functionBody[2].expression.right.left.type === "CallExpression" &&
+            functionBody[2].expression.right.operator === "||" &&
+            functionBody[2].expression.right.right.type === "ThisExpression" &&
+            lastNode.type === "ReturnStatement" &&
+            lastNode.argument &&
+            lastNode.argument.type === "Identifier" &&
+            lastNode.argument.name ===
+              functionBody[0].declarations[0].id.name &&
+            functionExpression.params.length === 0
+          ) {
+            // args are spread :husk:
+            isSpread = true;
+
+            const _this = functionBody[0].declarations[0].id.name;
+
+            functionBodyClone = functionBody.slice(3);
+            functionBodyClone.pop();
+
+            functionBodyClone = [
+              {
+                type: "ExpressionStatement",
+                expression: {
+                  type: "CallExpression",
+                  callee: { type: "Super" },
+                  arguments: [
+                    {
+                      type: "SpreadElement",
+                      argument: { type: "Identifier", name: "args" },
+                    },
+                  ],
+                  optional: false,
+                },
+              },
+              ...functionBodyClone,
+            ];
+
+            // @ts-ignore
+            walk.ancestor(
+              // @ts-ignore
+              {
+                ...functionExpression,
+                body: {
+                  ...functionExpression.body,
+                  body: functionBodyClone,
+                },
+              } as any,
+              {
+                // @ts-ignore
+                Identifier(node: Identifier, ancestors: Node[]) {
+                  if (node.name === _this) {
+                    Object.assign(node, { type: "ThisExpression" });
+                  }
+                },
+              },
+              walkBase
+            );
+          }
+
+          if (
+            superClass &&
+            functionBody[0].type === "VariableDeclaration" &&
+            functionBody[0].declarations[0] &&
+            functionBody[0].declarations[0].id.type === "Identifier" &&
+            functionBody[1].type === "ExpressionStatement" &&
+            functionBody[1].expression.type === "AssignmentExpression" &&
+            functionBody[1].expression.right.type === "LogicalExpression" &&
+            functionBody[1].expression.right.left.type === "CallExpression" &&
+            functionBody[1].expression.right.left.callee.type ===
+              "MemberExpression" &&
+            recast.print(functionBody[1].expression.right.left.callee.object)
+              .code === recast.print(superClass).code &&
+            functionBody[1].expression.right.operator === "||" &&
+            functionBody[1].expression.right.right.type === "ThisExpression" &&
+            lastNode.type === "ReturnStatement" &&
+            lastNode.argument &&
+            lastNode.argument.type === "Identifier" &&
+            lastNode.argument.name === functionBody[0].declarations[0].id.name
+          ) {
+            const _this = functionBody[0].declarations[0].id.name;
+            const _super = functionBody[1].expression.right.left;
+
+            const superArgs = _super.arguments;
+            superArgs.shift();
+
+            functionBodyClone = functionBody.slice(2);
+            functionBodyClone.pop();
+
+            functionBodyClone = [
+              {
+                type: "ExpressionStatement",
+                expression: {
+                  type: "CallExpression",
+                  callee: { type: "Super" },
+                  arguments: superArgs,
+                  optional: false,
+                },
+              },
+              ...functionBodyClone,
+            ];
+
+            // @ts-ignore
+            walk.ancestor(
+              // @ts-ignore
+              {
+                ...functionExpression,
+                body: {
+                  ...functionExpression.body,
+                  body: functionBodyClone,
+                },
+              } as any,
+              {
+                // @ts-ignore
+                Identifier(node: Identifier, ancestors: Node[]) {
+                  if (node.name === _this) {
+                    Object.assign(node, { type: "ThisExpression" });
+                  }
+                },
+              },
+              walkBase
+            );
+          }
+
+          // @ts-ignore
+          walk.ancestor(
+            // @ts-ignore
+            {
+              ...functionExpression,
+              body: {
+                ...functionExpression.body,
+                body: functionBodyClone,
+              },
+            } as any,
+            {
+              // @ts-ignore
+              FunctionExpression(node: FunctionExpression, ancestors: Node[]) {
+                Object.assign(node, {
+                  ...node,
+                  body: {
+                    ...node.body,
+                    body: parseFunctionBody(node),
+                  },
+                } as any);
+              },
+            },
+            walkBase
+          );
+
+          return {
+            ...functionExpression,
+            params: isSpread
+              ? [
+                  {
+                    type: "RestElement",
+                    argument: { type: "Identifier", name: "args" },
+                  },
+                ]
+              : functionExpression.params,
+            body: {
+              ...functionExpression.body,
+              body: functionBodyClone,
+            },
+          };
+        };
+
+        const declaratorIndex = parent.declarations.indexOf(node);
+        const otherDeclarations = parent.declarations.filter(
+          (_, i) => i !== declaratorIndex
+        );
+
+        return {
+          ...parent,
+          declarations: [
+            ...otherDeclarations,
+            {
+              ...node,
+              init: {
+                ...node.init,
+                callee: {
+                  type: "ClassDeclaration",
+                  id: {
+                    type: "Identifier",
+                    name,
+                  },
+                  superClass,
+                  body: {
+                    type: "ClassBody",
+                    body: [
+                      classConstructor.body.body[0] &&
+                        classConstructor.body.body[0].type !==
+                          "ReturnStatement" && {
+                          type: "MethodDefinition",
+                          static: false,
+                          computed: false,
+                          key: {
+                            type: "Identifier",
+                            name: "constructor",
+                          },
+                          kind: "method",
+                          value: fixConstructorReferences(
+                            parseConstructor({
+                              ...classConstructor,
+                              type: "FunctionExpression",
+                              id: null,
+                              body: {
+                                ...classConstructor.body,
+                                body: parseFunctionBody(
+                                  classConstructor as any as FunctionExpression
+                                ),
+                              },
+                            }) as any
+                          ),
+                        },
+                      ...functionBody.map((statement) => {
+                        switch (statement.type) {
+                          case "ExpressionStatement": {
+                            if (
+                              statement.expression.type ===
+                                "AssignmentExpression" &&
+                              statement.expression.left &&
+                              statement.expression.left.type ===
+                                "MemberExpression" &&
+                              statement.expression.left.object &&
+                              statement.expression.left.object.type ===
+                                "Identifier" &&
+                              (statement.expression.left.object.name ===
+                                protoIdentifier ||
+                                (classConstructor.id &&
+                                  statement.expression.left.object.name ===
+                                    classConstructor.id.name)) &&
+                              statement.expression.left.property &&
+                              statement.expression.left.property.type ===
+                                "Identifier" &&
+                              statement.expression.right &&
+                              statement.expression.right.type ===
+                                "FunctionExpression"
+                            ) {
+                              const functionName =
+                                statement.expression.left.property.name;
+                              const functionExpression =
+                                statement.expression.right;
+
+                              return {
+                                type: "MethodDefinition",
+                                static:
+                                  classConstructor.id &&
+                                  statement.expression.left.object.name ===
+                                    classConstructor.id.name
+                                    ? true
+                                    : false,
+                                computed: false,
+                                key: {
+                                  type: "Identifier",
+                                  name: functionName,
+                                },
+                                kind: "method",
+                                value: fixConstructorReferences({
+                                  ...functionExpression,
+                                  id: null,
+                                  body: {
+                                    ...functionExpression.body,
+                                    body: parseFunctionBody(functionExpression),
+                                  },
+                                }),
+                              } as any as MethodDefinition;
+                            }
+                          }
+                        }
+                      }),
+                    ].filter((statement) => statement),
+                  },
+                },
+              },
+            },
+          ],
+        } as any as ClassDeclaration;
+      }
+    }
+
+    return parent as unknown as ClassDeclaration;
+  }
 }
 
 export default ClassParser;
