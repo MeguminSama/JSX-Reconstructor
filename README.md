@@ -1,18 +1,7 @@
 # JSX Reconstructor
 
 This project was made with the intention of turning compiled React code back into JSX.
-
-For example,
-
-```js
-const x = React.createElement("div", null, "Hello, World!");
-```
-
-Should become:
-
-```jsx
-const x = <div>Hello, World!</div>;
-```
+Tested with pre and post-SWC Discord builds and React Native builds.
 
 ## Caution!
 
@@ -24,4 +13,4 @@ This code is extremely shit and WIP. Please do give it a try and create an issue
 2. Create a folder called `input` and place your `.js` files in there.
 3. Run `npm run start`
 
-Copyright &copy; 2023, https://github.com/MeguminSama & https://github.com/vftable
+Copyright &copy; 2024, https://github.com/MeguminSama, https://github.com/vftable and https://github.com/0xeac7
